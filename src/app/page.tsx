@@ -135,16 +135,13 @@ export default function Home() {
   return (
     <main className="mx-auto max-w-5xl px-4 py-10 sm:py-14">
       {/* Header */}
-      <header className="mb-10 text-center">
-        <div className="inline-flex items-center gap-2 rounded-full bg-brand-600 px-4 py-1.5 text-sm font-bold tracking-[0.2em] text-white shadow-lg shadow-brand-600/25">
-          VBUILD
-        </div>
-        <h1 className="mt-5 text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
-          Buyer Price List Generator
+      <header className="mb-8">
+        <h1 className="text-2xl font-bold tracking-tight text-gray-900 sm:text-3xl">
+          Buyer Price List
         </h1>
-        <p className="mx-auto mt-3 max-w-xl text-base text-gray-500">
-          Upload an order PDF, add a per-bag markup, and download a clean,
-          buyer-ready price list in seconds.
+        <p className="mt-2 max-w-2xl text-sm text-gray-500">
+          Upload an order sheet, set the markup, and download the buyer&apos;s
+          copy.
         </p>
       </header>
 
@@ -196,9 +193,7 @@ export default function Home() {
               <p className="mt-4 text-lg font-medium text-gray-700">
                 Reading {file?.name}…
               </p>
-              <p className="mt-1 text-sm text-gray-400">
-                Extracting items and prices
-              </p>
+
             </>
           ) : (
             <>
@@ -252,7 +247,7 @@ export default function Home() {
             {parsed.totalsMatch ? (
               <div className="mt-4 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
                 <CheckCircle2 className="h-4 w-4" />
-                Parsed successfully — totals verified against the source PDF.
+                Totals match the source sheet.
               </div>
             ) : (
               <div className="mt-4 flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700">
@@ -303,7 +298,7 @@ export default function Home() {
             refNo={refNo}
             onRefChange={setRefNo}
             refreshKey={buyerRefreshKey}
-            description="Optional. Printed at the top of the price list you hand to the buyer."
+            description="Printed at the top of the price list."
           />
 
           {/* Summary stats */}
@@ -398,7 +393,7 @@ export default function Home() {
       )}
 
       <footer className="mt-16 text-center text-xs text-gray-400">
-        Built by VBUILD · Prices in LKR
+        Built by Lathurshan
       </footer>
     </main>
   );

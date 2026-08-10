@@ -1,9 +1,9 @@
-# VBUILD — Order Tools
+# BaleBook
 
-Three tools for managing clothing import order sheets, all driven by PDF and
-JSON files — no database required.
+Order sheets, sales and stockpile tracking for a clothing import business.
+Everything runs on PDF and JSON files, so there is no database to maintain.
 
-Built with Next.js + TypeScript + Tailwind CSS. 100% free tooling.
+Built with Next.js, TypeScript and Tailwind CSS.
 
 ---
 
@@ -21,7 +21,7 @@ the recalculated table, and download a clean, buyer-ready price list PDF.
   on the source PDF and warns you if they don't match
 - **Buyer details**: name and phone are printed at the top of the PDF, with an
   auto-numbered (editable) reference
-- **Download** a branded, multi-page PDF authored by VBUILD
+- **Download** a branded, multi-page PDF
 
 ## 2. Order Editor (`/edit`)
 
@@ -159,4 +159,4 @@ Sample supplier orders used for testing are in `sample-orders/`.
 
 ---
 
-Built by **VBUILD**. Prices in LKR.
+Built by **Lathurshan**.

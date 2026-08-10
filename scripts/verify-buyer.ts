@@ -137,7 +137,7 @@ console.log("\n== PDF buyer block ==");
     label: "Sales",
     subtitle: "Sales recorded 09 Aug 2026",
     buyer: { name: "Ahmad Trading Co.", phone: "0771234567" },
-    refNo: "VB-260809-001",
+    refNo: "BB-260809-001",
   });
   writeFileSync(".verify/buyer.pdf", withBuyer);
   check(withBuyer.length > 2000, `PDF with buyer rendered (${withBuyer.length} bytes)`);

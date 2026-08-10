@@ -30,8 +30,10 @@
  */
 
 import { formatLKR } from "./types";
+import { readLocal, writeLocal } from "./storage";
 
-export const STOCKPILE_KEY = "vbuild.stockpile.v1";
+export const STOCKPILE_KEY = "balebook.stockpile.v1";
+const STOCKPILE_KEY_LEGACY = "vbuild.stockpile.v1";
 export const STOCKPILE_VERSION = 1;
 /** Keep the audit trail useful without letting the file grow forever. */
 export const MAX_HISTORY = 300;
@@ -75,7 +77,7 @@ export interface StockMovement {
 }
 
 export interface Stockpile {
-  app: "vbuild-stockpile";
+  app: "balebook-stockpile";
   version: number;
   items: StockItem[];
   history: StockMovement[];
@@ -84,7 +86,7 @@ export interface Stockpile {
 
 export function emptyStockpile(): Stockpile {
   return {
-    app: "vbuild-stockpile",
+    app: "balebook-stockpile",
     version: STOCKPILE_VERSION,
     items: [],
     history: [],
@@ -169,7 +171,7 @@ export function parseStockpile(input: unknown): Stockpile {
     .slice(0, MAX_HISTORY);
 
   return {
-    app: "vbuild-stockpile",
+    app: "balebook-stockpile",
     version: Number(raw.version) || STOCKPILE_VERSION,
     items: cleanItems,
     history: cleanHistory,
@@ -180,7 +182,7 @@ export function parseStockpile(input: unknown): Stockpile {
 export function loadStockpile(): Stockpile {
   if (typeof window === "undefined") return emptyStockpile();
   try {
-    const raw = window.localStorage.getItem(STOCKPILE_KEY);
+    const raw = readLocal(STOCKPILE_KEY, STOCKPILE_KEY_LEGACY);
     if (!raw) return emptyStockpile();
     return parseStockpile(JSON.parse(raw));
   } catch {
@@ -189,12 +191,7 @@ export function loadStockpile(): Stockpile {
 }
 
 export function saveStockpile(sp: Stockpile): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(STOCKPILE_KEY, JSON.stringify(sp));
-  } catch {
-    /* storage unavailable - not fatal */
-  }
+  writeLocal(STOCKPILE_KEY, JSON.stringify(sp));
 }
 
 /* ------------------------------- aggregation ------------------------------ */

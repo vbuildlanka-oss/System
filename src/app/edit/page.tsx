@@ -41,9 +41,11 @@ import {
 } from "@/lib/buyer";
 import BuyerFields from "@/components/BuyerFields";
 import { addLots, loadStockpile, saveStockpile } from "@/lib/stockpile";
+import { readLocal, removeLocal, writeLocal } from "@/lib/storage";
 import { cn } from "@/lib/cn";
 
-const STORAGE_KEY = "vbuild.orderEditor.v1";
+const STORAGE_KEY = "balebook.orderEditor.v1";
+const STORAGE_KEY_LEGACY = "vbuild.orderEditor.v1";
 
 interface SoldEntry {
   id: string;
@@ -63,7 +65,7 @@ interface Snapshot {
 }
 
 interface SessionFile {
-  app: "vbuild-order-editor";
+  app: "balebook-order-editor";
   /** 1 = original, 2 = adds buyer + reference number. Both load fine. */
   version: number;
   title: string;
@@ -142,7 +144,7 @@ export default function EditPage() {
   // Restore autosaved work on first mount.
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = readLocal(STORAGE_KEY, STORAGE_KEY_LEGACY);
       if (raw) {
         const saved = JSON.parse(raw) as SessionFile;
         if (Array.isArray(saved.rows) && saved.rows.length > 0) {
@@ -163,7 +165,7 @@ export default function EditPage() {
   useEffect(() => {
     if (rows.length === 0 && title === "") return;
     const payload: SessionFile = {
-      app: "vbuild-order-editor",
+      app: "balebook-order-editor",
       version: SESSION_VERSION,
       title,
       rows,
@@ -172,11 +174,7 @@ export default function EditPage() {
       refNo,
       savedAt: new Date().toISOString(),
     };
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    } catch {
-      /* storage full or unavailable - not fatal */
-    }
+    writeLocal(STORAGE_KEY, JSON.stringify(payload));
   }, [title, rows, soldLog, buyer, refNo]);
 
   /* ------------------------------ history ------------------------------ */
@@ -582,7 +580,7 @@ export default function EditPage() {
 
   const saveSession = useCallback(() => {
     const payload: SessionFile = {
-      app: "vbuild-order-editor",
+      app: "balebook-order-editor",
       version: SESSION_VERSION,
       title,
       rows,
@@ -666,11 +664,7 @@ export default function EditPage() {
     setBuyer(EMPTY_BUYER);
     setRefNo("");
     setReceiptBuyerKey("");
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      /* ignore */
-    }
+    removeLocal(STORAGE_KEY, STORAGE_KEY_LEGACY);
     if (pdfInputRef.current) pdfInputRef.current.value = "";
     if (jsonInputRef.current) jsonInputRef.current.value = "";
   }, []);
@@ -684,9 +678,8 @@ export default function EditPage() {
           Order Editor
         </h1>
         <p className="mt-2 max-w-2xl text-sm text-gray-500">
-          Upload a sheet, edit any value, record bags as they sell, then download
-          the updated PDF. Your work is saved in this browser automatically - no
-          database needed.
+          Update a sheet as bags sell, then download the new version. Your work
+          is saved in this browser as you go.
         </p>
       </header>
 
@@ -839,7 +832,7 @@ export default function EditPage() {
             refNo={refNo}
             onRefChange={setRefNo}
             refreshKey={buyerRefreshKey}
-            description="Printed on the updated sheet, and used as the default buyer when you record a sale."
+            description="Printed on the sheet, and used as the default when you record a sale."
           />
 
           {/* toolbar */}
@@ -1231,7 +1224,7 @@ export default function EditPage() {
       )}
 
       <footer className="mt-16 text-center text-xs text-gray-400">
-        Built by VBUILD - Prices in LKR - Your sheet is autosaved in this browser
+        Built by Lathurshan
       </footer>
     </main>
   );

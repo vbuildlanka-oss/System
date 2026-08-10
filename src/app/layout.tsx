@@ -3,9 +3,9 @@ import "./globals.css";
 import Nav from "@/components/Nav";
 
 export const metadata: Metadata = {
-  title: "VBUILD | Buyer Price List Generator",
+  title: "BaleBook",
   description:
-    "Upload an order PDF, apply a per-bag markup, and download a buyer-ready price list. By VBUILD.",
+    "Order sheets, sales and stockpile tracking for a clothing import business.",
 };
 
 export default function RootLayout({

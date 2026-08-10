@@ -6,6 +6,8 @@
  * customer, and saved session files carry their own copy of the buyer.
  */
 
+import { readLocal, writeLocal } from "./storage";
+
 export interface Buyer {
   name: string;
   phone: string;
@@ -152,13 +154,14 @@ const buyerKey = buyerIdentityKey;
 
 /* --------------------------- recent buyer store --------------------------- */
 
-const BUYERS_KEY = "vbuild.buyers.v1";
+const BUYERS_KEY = "balebook.buyers.v1";
+const BUYERS_KEY_LEGACY = "vbuild.buyers.v1";
 const MAX_BUYERS = 25;
 
 export function loadBuyers(): Buyer[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = window.localStorage.getItem(BUYERS_KEY);
+    const raw = readLocal(BUYERS_KEY, BUYERS_KEY_LEGACY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -183,11 +186,7 @@ export function rememberBuyer(buyer: Buyer): Buyer[] {
   const key = buyerKey(clean);
   const existing = loadBuyers().filter((b) => buyerKey(b) !== key);
   const next = [clean, ...existing].slice(0, MAX_BUYERS);
-  try {
-    window.localStorage.setItem(BUYERS_KEY, JSON.stringify(next));
-  } catch {
-    /* storage unavailable - not fatal */
-  }
+  writeLocal(BUYERS_KEY, JSON.stringify(next));
   return next;
 }
 
@@ -195,17 +194,14 @@ export function forgetBuyer(buyer: Buyer): Buyer[] {
   if (typeof window === "undefined") return [];
   const key = buyerKey(buyer);
   const next = loadBuyers().filter((b) => buyerKey(b) !== key);
-  try {
-    window.localStorage.setItem(BUYERS_KEY, JSON.stringify(next));
-  } catch {
-    /* ignore */
-  }
+  writeLocal(BUYERS_KEY, JSON.stringify(next));
   return next;
 }
 
 /* ---------------------------- reference numbers ---------------------------- */
 
-const REF_KEY = "vbuild.refCounter.v1";
+const REF_KEY = "balebook.refCounter.v1";
+const REF_KEY_LEGACY = "vbuild.refCounter.v1";
 
 function todayStamp(d = new Date()): string {
   const yy = String(d.getFullYear()).slice(2);
@@ -215,27 +211,27 @@ function todayStamp(d = new Date()): string {
 }
 
 /**
- * Next document reference, e.g. "VB-260809-003".
+ * Next document reference, e.g. "BB-260809-003".
  * Counts up per day and is stored locally. It stays editable in the UI so you
  * always have the final say on what appears on the document.
  */
 export function nextRefNo(): string {
   const stamp = todayStamp();
-  if (typeof window === "undefined") return `VB-${stamp}-001`;
+  if (typeof window === "undefined") return `BB-${stamp}-001`;
   let n = 1;
   try {
-    const raw = window.localStorage.getItem(REF_KEY);
+    const raw = readLocal(REF_KEY, REF_KEY_LEGACY);
     if (raw) {
       const saved = JSON.parse(raw) as { date?: string; n?: number };
       if (saved.date === stamp && typeof saved.n === "number") {
         n = saved.n + 1;
       }
     }
-    window.localStorage.setItem(REF_KEY, JSON.stringify({ date: stamp, n }));
+    writeLocal(REF_KEY, JSON.stringify({ date: stamp, n }));
   } catch {
     /* ignore */
   }
-  return `VB-${stamp}-${String(n).padStart(3, "0")}`;
+  return `BB-${stamp}-${String(n).padStart(3, "0")}`;
 }
 
 

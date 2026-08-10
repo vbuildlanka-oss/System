@@ -388,9 +388,8 @@ export default function StockpilePage() {
           Stockpile
         </h1>
         <p className="mt-2 max-w-2xl text-sm text-gray-500">
-          Bags carried forward when sales are slow. Leftovers from every order
-          merge here, each batch keeping its own price and date so you can see
-          exactly what is ageing and how much cash is tied up.
+          Bags carried forward from earlier orders. Each batch keeps its own
+          price and date, so you can see what is ageing and what it is worth.
         </p>
       </header>
 
@@ -429,7 +428,6 @@ export default function StockpilePage() {
         <Banner tone="warn">
           {totals.deadBags} bag{totals.deadBags === 1 ? "" : "s"} worth{" "}
           {formatLKR(totals.deadValue)} have been sitting 90 days or more.
-          Consider discounting them to free up cash.
         </Banner>
       )}
 
@@ -955,8 +953,7 @@ export default function StockpilePage() {
             />
           </Field>
           <p className="mt-1 text-xs text-gray-500">
-            If this item is already in the stockpile, the bags are added as a new
-            batch rather than overwriting what is there.
+            An item already in the stockpile gets a new batch, not a replacement.
           </p>
           <Actions onCancel={closeDialog} onConfirm={submitAdd} confirm="Add bags" />
         </Modal>
@@ -1011,8 +1008,7 @@ export default function StockpilePage() {
         <Modal title={`Merge ${dialogItem.name} into...`} onClose={closeDialog}>
           <p className="mb-3 text-sm text-gray-500">
             Every batch of <strong>{dialogItem.name}</strong> moves into the item
-            you pick. Use this when the same product was written two different
-            ways across orders.
+            you pick. Use it when one product was named two ways.
           </p>
           <Field label="Merge into">
             <select
@@ -1036,7 +1032,7 @@ export default function StockpilePage() {
       )}
 
       <footer className="mt-16 text-center text-xs text-gray-400">
-        Built by VBUILD · Prices in LKR · Stockpile autosaved in this browser
+        Built by Lathurshan
       </footer>
     </main>
   );

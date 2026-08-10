@@ -1,8 +1,8 @@
 {
-  "name": "vbuild-buyer-pricelist",
+  "name": "balebook",
   "version": "1.0.0",
   "private": true,
-  "author": "VBUILD",
+  "author": "Lathurshan <vbuildmain@gmail.com>",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

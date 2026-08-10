@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { parseOrderPdf } from "../src/lib/parseOrder";
 import { buildBuyerPriceList, formatLKR } from "../src/lib/types";
 import { renderBuyerPdf } from "../src/lib/buyerPdf";
@@ -48,6 +48,7 @@ async function run(path: string, markup: number) {
 }
 
 (async () => {
+  mkdirSync(".verify", { recursive: true });
   const a = await run("sample-orders/Sri Lanka Order 3 2026 - Sheet1 (1).pdf", 2000);
   const b = await run("sample-orders/Sri Lanka Order 4 2026 - Sheet1 (1).pdf", 2000);
   if (!a || !b) {

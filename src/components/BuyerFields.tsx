@@ -44,7 +44,7 @@ export default function BuyerFields({
   refreshKey = 0,
   compact = false,
   heading = "Buyer details",
-  description = "Optional. Anything you enter here is printed on the PDF.",
+  description = "Printed on the PDF.",
 }: Props) {
   const [saved, setSaved] = useState<Buyer[]>([]);
   const [showList, setShowList] = useState(false);
@@ -244,12 +244,12 @@ export default function BuyerFields({
             <input
               value={refNo ?? ""}
               onChange={(e) => onRefChange(e.target.value)}
-              placeholder="VB-260809-001"
+              placeholder="BB-260809-001"
               className="w-full rounded-lg border border-gray-300 py-2 pl-9 pr-3 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
             />
           </div>
           <p className="mt-1 text-xs text-gray-500">
-            Auto-numbered per day. Edit it if you keep your own numbering.
+            Numbered automatically. Edit it if you use your own numbering.
           </p>
         </div>
       )}
