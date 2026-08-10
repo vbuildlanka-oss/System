@@ -1,7 +1,7 @@
 # VBUILD — Order Tools
 
-Two tools for managing clothing import order sheets, both driven by PDF files —
-no database required.
+Three tools for managing clothing import order sheets, all driven by PDF and
+JSON files — no database required.
 
 Built with Next.js + TypeScript + Tailwind CSS. 100% free tooling.
 
@@ -60,6 +60,43 @@ Both pages have a buyer section (name + phone), printed on the PDF as a
 - Buyer input is sanitised server-side (control characters stripped, length
   capped) so a bad paste can never break the PDF.
 
+## 3. Stockpile (`/stockpile`)
+
+When sales are slow, leftover bags don't disappear — they get set aside and
+mixed with leftovers from earlier orders. The stockpile is that carried-forward
+inventory.
+
+- **Send leftovers straight from the editor** — one click moves every remaining
+  bag into the stockpile, tagged with the order it came from, and clears the
+  sheet so nothing is counted twice (undoable).
+- **Batch tracking** — the same item can arrive from several orders at different
+  prices. Each batch keeps its own price, source and date:
+
+  ```
+  Blanket
+    +- 12 bags @ Rs20,000  from "Order 3"  added 95 days ago
+    +-  5 bags @ Rs22,000  from "Order 4"  added  8 days ago
+  ```
+
+- **Ageing view** — a breakdown bar splits your bags into under 30 / 30-59 /
+  60-89 / 90+ days. Click any band to filter the table. Dead stock (90+ days)
+  raises a warning with the cash value sitting idle.
+- **FIFO withdrawals** — removing bags takes the oldest batch first, and shows
+  you exactly which batches will be drawn and what they're worth before you
+  confirm. Stock can never go negative.
+- **Automatic item merging** — `Anorak #2` from one order lands on the existing
+  `Anorak 2`, so leftovers combine instead of fragmenting. Genuinely different
+  grades stay separate, and anything ambiguous (`Ladies Tshirt` vs
+  `Ladies Tshirts`) is left for you to merge manually.
+- **Exports** — a *Stockpile* PDF stock sheet, and a CSV with one row per batch
+  (item, bags, price, source, date, age) for spreadsheet work.
+- **Movement history** — every addition and removal is logged, newest first,
+  capped at 300 entries so the file stays small.
+- **Storage**: one JSON document, autosaved in the browser and downloadable.
+  Totals, averages and ages are always *calculated* from the batches, never
+  stored, so nothing can drift out of sync. A stockpile of 71 items / 94 batches
+  / 245 bags is under 30 KB.
+
 ---
 
 ## Deploy to Vercel (1-click)
@@ -92,9 +129,10 @@ npm run start
 End-to-end checks against the sample orders in `sample-orders/`:
 
 ```bash
-npx tsx scripts/e2e.ts           # price list: parsing + markup
-npx tsx scripts/verify-edit.ts   # editor: edits, sales, overrides, exports
-npx tsx scripts/verify-buyer.ts  # buyers: phone formats, sanitising, PDF block
+npx tsx scripts/e2e.ts               # price list: parsing + markup
+npx tsx scripts/verify-edit.ts       # editor: edits, sales, overrides, exports
+npx tsx scripts/verify-buyer.ts      # buyers: phone formats, sanitising, PDF block
+npx tsx scripts/verify-stockpile.ts  # stockpile: batches, FIFO, ageing, files
 ```
 
 ---
@@ -108,6 +146,8 @@ npx tsx scripts/verify-buyer.ts  # buyers: phone formats, sanitising, PDF block
 | Editable rows + totals | `src/lib/types.ts` (`buildSheetFromRows`) |
 | Buyer validation + memory | `src/lib/buyer.ts` |
 | Buyer input UI | `src/components/BuyerFields.tsx` |
+| Stockpile model + FIFO + ageing | `src/lib/stockpile.ts` |
+| Stockpile UI | `src/app/stockpile/page.tsx` |
 | Render any PDF | `src/lib/buyerPdf.tsx` (`renderSheetPdf`) |
 | Upload / parse endpoint | `src/app/api/process/route.ts` |
 | Price list download endpoint | `src/app/api/generate/route.ts` |

@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FileSpreadsheet, PencilRuler } from "lucide-react";
+import { Boxes, FileSpreadsheet, PencilRuler } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 const links = [
   { href: "/", label: "Price List", icon: FileSpreadsheet },
   { href: "/edit", label: "Order Editor", icon: PencilRuler },
+  { href: "/stockpile", label: "Stockpile", icon: Boxes },
 ];
 
 export default function Nav() {

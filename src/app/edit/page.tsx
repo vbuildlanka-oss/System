@@ -27,6 +27,7 @@ import {
   Eye,
   FileDown,
   CheckCircle2,
+  Boxes,
 } from "lucide-react";
 import type { EditableRow, ParsedOrder } from "@/lib/types";
 import { computeRowTotal, formatLKR } from "@/lib/types";
@@ -39,6 +40,7 @@ import {
   type Buyer,
 } from "@/lib/buyer";
 import BuyerFields from "@/components/BuyerFields";
+import { addLots, loadStockpile, saveStockpile } from "@/lib/stockpile";
 import { cn } from "@/lib/cn";
 
 const STORAGE_KEY = "vbuild.orderEditor.v1";
@@ -603,6 +605,47 @@ export default function EditPage() {
     setNotice("Session file saved. Keep it to resume later.");
   }, [title, rows, soldLog, buyer, refNo]);
 
+  /**
+   * Sales were slow: move whatever is left into the stockpile so it carries
+   * forward with the leftovers from earlier orders. The rows are zeroed here so
+   * the same bags can never be counted in two places (undo restores them).
+   */
+  const sendToStockpile = useCallback(() => {
+    const remaining = rows.filter((r) => r.qty > 0);
+    if (remaining.length === 0) {
+      setError("There are no bags left on this sheet to move.");
+      return;
+    }
+    const totalBags = remaining.reduce((s, r) => s + r.qty, 0);
+    if (
+      !window.confirm(
+        `Move ${totalBags} remaining bag(s) across ${remaining.length} item(s) into the stockpile?\n\nThey will be cleared from this sheet so nothing is counted twice. You can undo this.`,
+      )
+    ) {
+      return;
+    }
+
+    const { stockpile, bagsAdded, itemsTouched } = addLots(
+      loadStockpile(),
+      remaining.map((r) => ({
+        name: r.name,
+        bags: r.qty,
+        perBag: r.perBag,
+        source: title.trim() || "Order",
+      })),
+    );
+    saveStockpile(stockpile);
+
+    snapshot();
+    setRows((rs) =>
+      rs.map((r) => (r.qty > 0 ? { ...r, qty: 0, totalOverride: null } : r)),
+    );
+    setError(null);
+    setNotice(
+      `Moved ${bagsAdded} bag(s) across ${itemsTouched} item(s) into the stockpile.`,
+    );
+  }, [rows, title, snapshot]);
+
   const clearAll = useCallback(() => {
     if (
       !window.confirm(
@@ -833,6 +876,9 @@ export default function EditPage() {
 
             <span className="mx-1 hidden h-6 w-px bg-gray-200 sm:block" />
 
+            <ToolButton onClick={sendToStockpile} icon={Boxes}>
+              To stockpile
+            </ToolButton>
             <ToolButton onClick={() => pdfInputRef.current?.click()} icon={UploadCloud}>
               New PDF
             </ToolButton>
