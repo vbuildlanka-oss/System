@@ -1,6 +1,7 @@
 import * as React from "react";
 import {
   Document,
+  Font,
   Page,
   Text,
   View,
@@ -10,6 +11,20 @@ import {
 import type { BuyerPriceList } from "./types";
 import { formatLKR } from "./types";
 import { displayPhone, type Buyer } from "./buyer";
+
+/**
+ * Break pathologically long unbroken words so they wrap inside their column
+ * instead of running across the rest of the row. Normal words are untouched.
+ */
+const MAX_WORD = 24;
+Font.registerHyphenationCallback((word) => {
+  if (word.length <= MAX_WORD) return [word];
+  const chunks: string[] = [];
+  for (let i = 0; i < word.length; i += MAX_WORD) {
+    chunks.push(word.slice(i, i + MAX_WORD));
+  }
+  return chunks;
+});
 
 const styles = StyleSheet.create({
   page: {
@@ -154,7 +169,7 @@ function BuyerDocument({
 
   return (
     <Document
-      author="Lathurshan"
+      author="BaleBook"
       creator="BaleBook"
       producer="BaleBook"
       title={heading}

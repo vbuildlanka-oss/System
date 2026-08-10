@@ -206,11 +206,19 @@ export default function EditPage() {
     });
   }, [rows, soldLog]);
 
-  // Keyboard: Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z redo
+  // Keyboard: Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z redo.
+  // Skipped while typing in a field so the browser's own undo still works there.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod || e.key.toLowerCase() !== "z") return;
+
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || el?.isContentEditable) {
+        return;
+      }
+
       e.preventDefault();
       if (e.shiftKey) redo();
       else undo();
@@ -605,8 +613,12 @@ export default function EditPage() {
 
   /**
    * Sales were slow: move whatever is left into the stockpile so it carries
-   * forward with the leftovers from earlier orders. The rows are zeroed here so
-   * the same bags can never be counted in two places (undo restores them).
+   * forward with the leftovers from earlier orders.
+   *
+   * The rows are zeroed here because the bags now live in the stockpile. The
+   * undo history is deliberately cleared afterwards: undoing the zeroing would
+   * put the bags back on the sheet while they are also sitting in the
+   * stockpile, which would count the same stock twice.
    */
   const sendToStockpile = useCallback(() => {
     const remaining = rows.filter((r) => r.qty > 0);
@@ -617,7 +629,7 @@ export default function EditPage() {
     const totalBags = remaining.reduce((s, r) => s + r.qty, 0);
     if (
       !window.confirm(
-        `Move ${totalBags} remaining bag(s) across ${remaining.length} item(s) into the stockpile?\n\nThey will be cleared from this sheet so nothing is counted twice. You can undo this.`,
+        `Move ${totalBags} remaining bag(s) across ${remaining.length} item(s) into the stockpile?\n\nThey will be cleared from this sheet so nothing is counted twice. This cannot be undone here - remove them from the Stockpile page if you change your mind.`,
       )
     ) {
       return;
@@ -634,15 +646,30 @@ export default function EditPage() {
     );
     saveStockpile(stockpile);
 
-    snapshot();
     setRows((rs) =>
       rs.map((r) => (r.qty > 0 ? { ...r, qty: 0, totalOverride: null } : r)),
     );
+    // Drop the history so the moved bags cannot be resurrected on this sheet.
+    setPast([]);
+    setFuture([]);
     setError(null);
     setNotice(
-      `Moved ${bagsAdded} bag(s) across ${itemsTouched} item(s) into the stockpile.`,
+      `Moved ${bagsAdded} bag(s) across ${itemsTouched} item(s) into the stockpile. Undo history was cleared to prevent double counting.`,
     );
-  }, [rows, title, snapshot]);
+  }, [rows, title]);
+
+  /** Loading a new sheet replaces everything, so confirm first if work exists. */
+  const requestNewPdf = useCallback(() => {
+    if (
+      rows.length > 0 &&
+      !window.confirm(
+        "Load a different sheet?\n\nThe current sheet and this session's sales will be replaced. Save the session first if you need to keep it.",
+      )
+    ) {
+      return;
+    }
+    pdfInputRef.current?.click();
+  }, [rows.length]);
 
   const clearAll = useCallback(() => {
     if (
@@ -872,7 +899,7 @@ export default function EditPage() {
             <ToolButton onClick={sendToStockpile} icon={Boxes}>
               To stockpile
             </ToolButton>
-            <ToolButton onClick={() => pdfInputRef.current?.click()} icon={UploadCloud}>
+            <ToolButton onClick={requestNewPdf} icon={UploadCloud}>
               New PDF
             </ToolButton>
             <ToolButton onClick={saveSession} icon={Save}>

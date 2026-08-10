@@ -18,7 +18,7 @@ export default function Nav() {
       <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
         <Link
           href="/"
-          className="text-base font-bold tracking-tight text-brand-600"
+          className="text-xl font-bold tracking-tight text-brand-600 sm:text-2xl"
         >
           BaleBook
         </Link>

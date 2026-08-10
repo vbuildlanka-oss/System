@@ -92,6 +92,8 @@ inventory.
   (item, bags, price, source, date, age) for spreadsheet work.
 - **Movement history** — every addition and removal is logged, newest first,
   capped at 300 entries so the file stays small.
+- **Tidy up** drops emptied items; **Clear all** wipes the stockpile after
+  confirming exactly how many bags and how much value will be lost.
 - **Storage**: one JSON document, autosaved in the browser and downloadable.
   Totals, averages and ages are always *calculated* from the batches, never
   stored, so nothing can drift out of sync. A stockpile of 71 items / 94 batches
@@ -133,6 +135,7 @@ npx tsx scripts/e2e.ts               # price list: parsing + markup
 npx tsx scripts/verify-edit.ts       # editor: edits, sales, overrides, exports
 npx tsx scripts/verify-buyer.ts      # buyers: phone formats, sanitising, PDF block
 npx tsx scripts/verify-stockpile.ts  # stockpile: batches, FIFO, ageing, files
+npx tsx scripts/verify-api.ts        # API routes: every success and failure path
 ```
 
 ---

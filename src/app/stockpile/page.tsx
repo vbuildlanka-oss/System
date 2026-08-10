@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Boxes,
   Plus,
@@ -364,6 +371,39 @@ export default function StockpilePage() {
     }
   }, [sp, downloadBlob]);
 
+  /**
+   * Wipe the stockpile completely. This is the one irreversible action on the
+   * page, so it states exactly what will be lost and nudges you to save the
+   * file first.
+   */
+  const clearStockpile = useCallback(() => {
+    if (sp.items.length === 0 && sp.history.length === 0) {
+      setNotice("The stockpile is already empty.");
+      return;
+    }
+    const t = stockpileTotals(sp);
+    if (
+      !window.confirm(
+        `Clear the entire stockpile?\n\n` +
+          `${t.itemCount} item(s), ${t.bags} bag(s) worth ${formatLKR(t.value)} ` +
+          `will be removed, along with the movement history.\n\n` +
+          `Save the file first if you might need this. This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+
+    const fresh = emptyStockpile();
+    setSp(fresh);
+    saveStockpile(fresh);
+    setExpanded(null);
+    setSearch("");
+    setBucketFilter("");
+    setShowHistory(false);
+    setError(null);
+    setNotice("Stockpile cleared.");
+  }, [sp]);
+
   const tidyUp = useCallback(() => {
     const before = sp.items.length;
     const next = removeEmptyItems(sp);
@@ -543,6 +583,9 @@ export default function StockpilePage() {
         <Tool onClick={() => jsonInputRef.current?.click()} icon={FolderOpen}>
           Load file
         </Tool>
+        <Tool onClick={clearStockpile} icon={Trash2} danger>
+          Clear all
+        </Tool>
       </div>
 
       {bucketFilter && (
@@ -641,9 +684,8 @@ export default function StockpilePage() {
                   const open = expanded === item.id;
                   const empty = bags === 0;
                   return (
-                    <>
+                    <Fragment key={item.id}>
                       <tr
-                        key={item.id}
                         className={cn(
                           "border-b border-gray-100 transition-colors hover:bg-brand-50/40",
                           empty && "bg-gray-50 text-gray-400",
@@ -752,7 +794,7 @@ export default function StockpilePage() {
 
                       {/* Batch detail */}
                       {open && (
-                        <tr key={`${item.id}-lots`} className="bg-gray-50/80">
+                        <tr className="bg-gray-50/80">
                           <td />
                           <td colSpan={6} className="px-3 py-3">
                             {item.lots.length === 0 ? (
@@ -822,7 +864,7 @@ export default function StockpilePage() {
                           </td>
                         </tr>
                       )}
-                    </>
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -1224,17 +1266,24 @@ function Tool({
   icon: Icon,
   children,
   disabled,
+  danger,
 }: {
   onClick: () => void;
   icon: React.ComponentType<{ className?: string }>;
   children: React.ReactNode;
   disabled?: boolean;
+  danger?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-40",
+        danger
+          ? "border-red-200 text-red-600 hover:bg-red-50"
+          : "border-gray-200 text-gray-700 hover:bg-gray-50",
+      )}
     >
       <Icon className="h-4 w-4" />
       <span className="hidden md:inline">{children}</span>

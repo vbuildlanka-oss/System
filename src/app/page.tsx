@@ -281,7 +281,11 @@ export default function Home() {
                   min={0}
                   step={500}
                   value={Number.isFinite(markup) ? markup : ""}
-                  onChange={(e) => setMarkup(parseFloat(e.target.value))}
+                  onChange={(e) => {
+                    const n = parseFloat(e.target.value);
+                    // Never allow a negative markup - it would cut the price.
+                    setMarkup(Number.isFinite(n) ? Math.max(0, n) : NaN);
+                  }}
                   className="w-full rounded-lg border border-gray-300 py-2 pl-9 pr-3 text-sm font-semibold text-gray-900 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
                 />
               </div>

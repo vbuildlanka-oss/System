@@ -100,11 +100,48 @@ export function buildBuyerPriceList(
   return { title: order.title, markup, rows, totalQty, grandTotal };
 }
 
-/** Format a number as "Rs1,234,567.00". */
+/* ------------------------------ safety limits ------------------------------ */
+/**
+ * Upper bounds applied to anything arriving at the PDF routes. These exist so a
+ * corrupt payload, a runaway paste or a mistyped figure can never hang the
+ * server or produce a nonsense document.
+ */
+export const LIMITS = {
+  /** Most line items one sheet may contain. Real orders run ~100. */
+  rows: 2000,
+  itemName: 120,
+  title: 120,
+  label: 40,
+  subtitle: 160,
+  /** Rs 1 trillion - far above any real order, still finite. */
+  money: 1_000_000_000_000,
+  /** Bags per line. */
+  qty: 1_000_000,
+  /** Markup per bag. */
+  markup: 100_000_000,
+} as const;
+
+/**
+ * Coerce an untrusted value into a finite, non-negative number within `max`.
+ * Anything unusable (NaN, Infinity, text, negatives) becomes 0.
+ */
+export function clampNumber(value: unknown, max: number): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(n, max);
+}
+
+/**
+ * Format a number as "Rs1,234,567.00".
+ *
+ * Guards against NaN and Infinity so a bad figure can never be printed on a
+ * document as "RsNaN" - it degrades to Rs0.00 instead.
+ */
 export function formatLKR(value: number): string {
+  const safe = Number.isFinite(value) ? value : 0;
   return (
     "Rs" +
-    value.toLocaleString("en-US", {
+    safe.toLocaleString("en-US", {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     })

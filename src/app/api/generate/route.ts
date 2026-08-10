@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { buildBuyerPriceList, type OrderItem } from "@/lib/types";
+import {
+  buildBuyerPriceList,
+  clampNumber,
+  LIMITS,
+  type OrderItem,
+} from "@/lib/types";
 import { renderBuyerPdf } from "@/lib/buyerPdf";
 import { REF_NO_MAX, sanitizeBuyer, sanitizeLine } from "@/lib/buyer";
 
@@ -7,9 +12,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 interface GenerateBody {
-  title?: string;
-  markup?: number;
-  items?: OrderItem[];
+  title?: unknown;
+  markup?: unknown;
+  items?: unknown;
   buyer?: unknown;
   refNo?: unknown;
 }
@@ -22,13 +27,31 @@ function safeFilename(title: string): string {
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as GenerateBody;
-    const title = (body.title || "Order").toString();
-    const markup = Number(body.markup);
+    const title = sanitizeLine(body.title, LIMITS.title) || "Order";
     const items = Array.isArray(body.items) ? body.items : [];
 
-    if (!Number.isFinite(markup) || markup < 0) {
+    // Only a real number or a numeric string counts as a markup.
+    //
+    // This is deliberately strict. Number(null) is 0, so a missing or null
+    // markup would otherwise sail through validation and silently produce a
+    // price list at cost price - handing the buyer your buying price. Note
+    // that JSON has no Infinity, so an infinite markup also arrives as null.
+    const rawMarkup =
+      typeof body.markup === "number"
+        ? body.markup
+        : typeof body.markup === "string" && body.markup.trim() !== ""
+          ? Number(body.markup)
+          : Number.NaN;
+
+    if (!Number.isFinite(rawMarkup) || rawMarkup < 0) {
       return NextResponse.json(
         { error: "Invalid markup value." },
+        { status: 400 },
+      );
+    }
+    if (rawMarkup > LIMITS.markup) {
+      return NextResponse.json(
+        { error: "That markup is unrealistically large." },
         { status: 400 },
       );
     }
@@ -38,13 +61,25 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
     }
+    if (items.length > LIMITS.rows) {
+      return NextResponse.json(
+        { error: `Too many items (limit ${LIMITS.rows}).` },
+        { status: 400 },
+      );
+    }
 
-    // Recompute everything server-side so the PDF can never be tampered with.
-    const clean: OrderItem[] = items.map((it) => ({
-      name: String(it.name),
-      qty: Number(it.qty),
-      perBag: Number(it.perBag),
-    }));
+    // Recompute everything server-side so the PDF can never be tampered with,
+    // clamping each figure so a corrupt row cannot poison the totals.
+    const clean: OrderItem[] = items.map((raw) => {
+      const it = (raw ?? {}) as Record<string, unknown>;
+      return {
+        name: sanitizeLine(it.name, LIMITS.itemName) || "Unnamed item",
+        qty: clampNumber(it.qty, LIMITS.qty),
+        perBag: clampNumber(it.perBag, LIMITS.money),
+      };
+    });
+
+    const markup = rawMarkup;
 
     const priceList = buildBuyerPriceList({ title, items: clean }, markup);
     const pdf = await renderBuyerPdf(priceList, {

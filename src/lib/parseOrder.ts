@@ -6,6 +6,42 @@ import type { OrderItem, ParsedOrder } from "./types";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pdf = require("pdf-parse/lib/pdf-parse.js");
 
+/**
+ * pdf-parse ships several pdf.js engines. The default one occasionally rejects
+ * perfectly valid documents with "bad XRef entry" - small PDFs produced by this
+ * app were one example - and the failure is not even consistent between runs.
+ *
+ * Rather than trust a single engine, we try them in turn. The default comes
+ * first because it is the one proven against the real supplier sheets; the
+ * others are only reached if it fails or finds no text at all.
+ */
+const ENGINES = ["v1.10.100", "v2.0.550", "v1.10.88", "v1.9.426"] as const;
+
+async function extractText(buffer: Buffer): Promise<string> {
+  let emptyResult: string | null = null;
+  let lastError: unknown = null;
+
+  for (const version of ENGINES) {
+    try {
+      const data = await pdf(buffer, { version });
+      const text = String(data?.text ?? "");
+      if (text.trim() !== "") return text;
+      // Readable but no text: remember it, another engine may do better.
+      emptyResult = text;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  // Every engine agreed there is no text (likely a scan) - let the caller
+  // report "no items found" rather than a hard failure.
+  if (emptyResult !== null) return emptyResult;
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Could not read the PDF.");
+}
+
 /** "Rs35,000.00" | "35,000.00" -> 35000 */
 function parseMoney(text: string): number {
   return Number(text.replace(/[^\d.]/g, ""));
@@ -65,8 +101,8 @@ function splitNameAndQty(
 }
 
 export async function parseOrderPdf(buffer: Buffer): Promise<ParsedOrder> {
-  const data = await pdf(buffer);
-  const rawLines: string[] = String(data.text)
+  const text = await extractText(buffer);
+  const rawLines: string[] = text
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l.length > 0);

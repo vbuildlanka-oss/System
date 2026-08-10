@@ -243,7 +243,10 @@ export function nextRefNo(): string {
  * break the document layout.
  */
 export function sanitizeLine(value: unknown, maxLength: number): string {
-  return String(value ?? "")
+  // Only text-like values are usable. Objects and arrays would otherwise be
+  // stringified into "[object Object]" and printed on the document.
+  if (typeof value !== "string" && typeof value !== "number") return "";
+  return String(value)
     .replace(/[\u0000-\u001F\u007F]+/g, " ")
     .replace(/\s+/g, " ")
     .trim()
