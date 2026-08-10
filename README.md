@@ -19,6 +19,8 @@ the recalculated table, and download a clean, buyer-ready price list PDF.
 - **Live preview** table before you download
 - **Validation**: the app compares its computed total against the total printed
   on the source PDF and warns you if they don't match
+- **Buyer details**: name and phone are printed at the top of the PDF, with an
+  auto-numbered (editable) reference
 - **Download** a branded, multi-page PDF authored by VBUILD
 
 ## 2. Order Editor (`/edit`)
@@ -38,6 +40,25 @@ keep a live sheet as customers buy.
 - **Save session** as a `.json` file and reload it later to resume
 - **Download** an *Updated* sheet PDF, plus an optional *Sales Receipt* PDF for
   the bags sold in the session
+
+### Buyers
+
+Both pages have a buyer section (name + phone), printed on the PDF as a
+**PREPARED FOR** block alongside a **REFERENCE** number.
+
+- **Phone validation** understands Sri Lankan formats (`0771234567`,
+  `077 123 4567`, `+94 77 123 4567`, `771234567`) and normalises them to
+  `+94 77 123 4567`. International numbers are accepted with a leading `+`.
+- If a number isn't recognised, you get a gentle warning but it is still printed
+  **exactly as you typed it** — the app never silently rewrites your input.
+- A **WhatsApp button** appears next to any valid number for one-tap messaging.
+- **Recent buyers** are remembered in your browser, so regulars can be picked
+  from a dropdown instead of retyped.
+- In the editor, each **sale is attributed to a buyer** (defaulting to the sheet
+  buyer). When several buyers bought in one session you can generate a
+  **receipt for a single buyer**.
+- Buyer input is sanitised server-side (control characters stripped, length
+  capped) so a bad paste can never break the PDF.
 
 ---
 
@@ -71,8 +92,9 @@ npm run start
 End-to-end checks against the sample orders in `sample-orders/`:
 
 ```bash
-npx tsx scripts/e2e.ts          # price list: parsing + markup
-npx tsx scripts/verify-edit.ts  # editor: edits, sales, overrides, exports
+npx tsx scripts/e2e.ts           # price list: parsing + markup
+npx tsx scripts/verify-edit.ts   # editor: edits, sales, overrides, exports
+npx tsx scripts/verify-buyer.ts  # buyers: phone formats, sanitising, PDF block
 ```
 
 ---
@@ -84,6 +106,8 @@ npx tsx scripts/verify-edit.ts  # editor: edits, sales, overrides, exports
 | Parse the uploaded PDF | `src/lib/parseOrder.ts` |
 | Apply markup + recompute totals | `src/lib/types.ts` (`buildBuyerPriceList`) |
 | Editable rows + totals | `src/lib/types.ts` (`buildSheetFromRows`) |
+| Buyer validation + memory | `src/lib/buyer.ts` |
+| Buyer input UI | `src/components/BuyerFields.tsx` |
 | Render any PDF | `src/lib/buyerPdf.tsx` (`renderSheetPdf`) |
 | Upload / parse endpoint | `src/app/api/process/route.ts` |
 | Price list download endpoint | `src/app/api/generate/route.ts` |

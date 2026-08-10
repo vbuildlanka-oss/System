@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildBuyerPriceList, type OrderItem } from "@/lib/types";
 import { renderBuyerPdf } from "@/lib/buyerPdf";
+import { REF_NO_MAX, sanitizeBuyer, sanitizeLine } from "@/lib/buyer";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,6 +10,8 @@ interface GenerateBody {
   title?: string;
   markup?: number;
   items?: OrderItem[];
+  buyer?: unknown;
+  refNo?: unknown;
 }
 
 function safeFilename(title: string): string {
@@ -44,7 +47,10 @@ export async function POST(req: NextRequest) {
     }));
 
     const priceList = buildBuyerPriceList({ title, items: clean }, markup);
-    const pdf = await renderBuyerPdf(priceList);
+    const pdf = await renderBuyerPdf(priceList, {
+      buyer: sanitizeBuyer(body.buyer),
+      refNo: sanitizeLine(body.refNo, REF_NO_MAX),
+    });
     // Buffer -> Uint8Array so it satisfies BodyInit for the Web Response.
     const pdfBody = new Uint8Array(pdf);
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildSheetFromRows, type EditableRow } from "@/lib/types";
 import { renderSheetPdf } from "@/lib/buyerPdf";
+import { REF_NO_MAX, sanitizeBuyer, sanitizeLine } from "@/lib/buyer";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,6 +19,8 @@ interface ExportBody {
   label?: unknown;
   subtitle?: unknown;
   rows?: unknown;
+  buyer?: unknown;
+  refNo?: unknown;
 }
 
 function safeFilename(title: string, label: string): string {
@@ -68,7 +71,12 @@ export async function POST(req: NextRequest) {
     });
 
     const sheet = buildSheetFromRows(title, rows);
-    const pdf = await renderSheetPdf(sheet, { label, subtitle });
+    const pdf = await renderSheetPdf(sheet, {
+      label,
+      subtitle,
+      buyer: sanitizeBuyer(body.buyer),
+      refNo: sanitizeLine(body.refNo, REF_NO_MAX),
+    });
     // Buffer -> Uint8Array so it satisfies BodyInit for the Web Response.
     const pdfBody = new Uint8Array(pdf);
 

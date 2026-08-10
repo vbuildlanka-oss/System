@@ -13,6 +13,14 @@ import {
 } from "lucide-react";
 import type { ParsedOrder } from "@/lib/types";
 import { buildBuyerPriceList, formatLKR } from "@/lib/types";
+import {
+  EMPTY_BUYER,
+  hasBuyerInfo,
+  nextRefNo,
+  rememberBuyer,
+  type Buyer,
+} from "@/lib/buyer";
+import BuyerFields from "@/components/BuyerFields";
 import { cn } from "@/lib/cn";
 
 const DEFAULT_MARKUP = 2000;
@@ -21,13 +29,16 @@ export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [parsed, setParsed] = useState<ParsedOrder | null>(null);
   const [markup, setMarkup] = useState<number>(DEFAULT_MARKUP);
+  const [buyer, setBuyer] = useState<Buyer>(EMPTY_BUYER);
+  const [refNo, setRefNo] = useState("");
+  const [buyerRefreshKey, setBuyerRefreshKey] = useState(0);
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const buyer = useMemo(() => {
+  const priceList = useMemo(() => {
     if (!parsed) return null;
     return buildBuyerPriceList(
       { title: parsed.title, items: parsed.items },
@@ -49,6 +60,8 @@ export default function Home() {
         throw new Error(data.error || "Failed to read the PDF.");
       }
       setParsed(data as ParsedOrder);
+      // Each newly loaded sheet gets its own document reference.
+      setRefNo(nextRefNo());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
       setFile(null);
@@ -79,6 +92,8 @@ export default function Home() {
           title: parsed.title,
           markup: Number.isFinite(markup) ? markup : 0,
           items: parsed.items,
+          buyer,
+          refNo,
         }),
       });
       if (!res.ok) {
@@ -94,18 +109,26 @@ export default function Home() {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+
+      // Remember the buyer so it can be picked from a list next time.
+      if (hasBuyerInfo(buyer)) {
+        rememberBuyer(buyer);
+        setBuyerRefreshKey((k) => k + 1);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Download failed.");
     } finally {
       setDownloading(false);
     }
-  }, [parsed, markup]);
+  }, [parsed, markup, buyer, refNo]);
 
   const reset = useCallback(() => {
     setFile(null);
     setParsed(null);
     setError(null);
     setMarkup(DEFAULT_MARKUP);
+    setBuyer(EMPTY_BUYER);
+    setRefNo("");
     if (inputRef.current) inputRef.current.value = "";
   }, []);
 
@@ -198,7 +221,7 @@ export default function Home() {
       )}
 
       {/* Results */}
-      {parsed && buyer && (
+      {parsed && priceList && (
         <div className="animate-fade-in space-y-6">
           {/* File + controls card */}
           <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
@@ -273,17 +296,27 @@ export default function Home() {
             </div>
           </div>
 
+          {/* Buyer details */}
+          <BuyerFields
+            value={buyer}
+            onChange={setBuyer}
+            refNo={refNo}
+            onRefChange={setRefNo}
+            refreshKey={buyerRefreshKey}
+            description="Optional. Printed at the top of the price list you hand to the buyer."
+          />
+
           {/* Summary stats */}
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-            <StatCard label="Total Bags" value={buyer.totalQty.toString()} />
+            <StatCard label="Total Bags" value={priceList.totalQty.toString()} />
             <StatCard
               label="Buyer Grand Total"
-              value={formatLKR(buyer.grandTotal)}
+              value={formatLKR(priceList.grandTotal)}
               highlight
             />
             <StatCard
               label="Added by Markup"
-              value={formatLKR(buyer.totalQty * markup)}
+              value={formatLKR(priceList.totalQty * markup)}
             />
           </div>
 
@@ -304,7 +337,7 @@ export default function Home() {
                   </tr>
                 </thead>
                 <tbody>
-                  {buyer.rows.map((r, i) => (
+                  {priceList.rows.map((r, i) => (
                     <tr
                       key={`${r.name}-${i}`}
                       className={cn(
@@ -328,10 +361,12 @@ export default function Home() {
                 <tfoot className="sticky bottom-0 bg-brand-100 font-bold text-gray-900">
                   <tr>
                     <td className="px-4 py-3">Total</td>
-                    <td className="px-4 py-3 text-center">{buyer.totalQty}</td>
+                    <td className="px-4 py-3 text-center">
+                      {priceList.totalQty}
+                    </td>
                     <td className="px-4 py-3" />
                     <td className="px-4 py-3 text-right">
-                      {formatLKR(buyer.grandTotal)}
+                      {formatLKR(priceList.grandTotal)}
                     </td>
                   </tr>
                 </tfoot>

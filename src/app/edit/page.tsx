@@ -30,6 +30,15 @@ import {
 } from "lucide-react";
 import type { EditableRow, ParsedOrder } from "@/lib/types";
 import { computeRowTotal, formatLKR } from "@/lib/types";
+import {
+  buyerIdentityKey,
+  EMPTY_BUYER,
+  hasBuyerInfo,
+  nextRefNo,
+  rememberBuyer,
+  type Buyer,
+} from "@/lib/buyer";
+import BuyerFields from "@/components/BuyerFields";
 import { cn } from "@/lib/cn";
 
 const STORAGE_KEY = "vbuild.orderEditor.v1";
@@ -41,6 +50,9 @@ interface SoldEntry {
   perBag: number;
   amount: number;
   at: string;
+  /** Who bought these bags (blank when not recorded). */
+  buyerName: string;
+  buyerPhone: string;
 }
 
 interface Snapshot {
@@ -50,17 +62,45 @@ interface Snapshot {
 
 interface SessionFile {
   app: "vbuild-order-editor";
-  version: 1;
+  /** 1 = original, 2 = adds buyer + reference number. Both load fine. */
+  version: number;
   title: string;
   rows: EditableRow[];
   soldLog: SoldEntry[];
+  buyer?: Buyer;
+  refNo?: string;
   savedAt: string;
 }
+
+const SESSION_VERSION = 2;
 
 let idCounter = 0;
 function newId(): string {
   idCounter += 1;
   return `r${Date.now().toString(36)}${idCounter}`;
+}
+
+function normalizeBuyer(input: unknown): Buyer {
+  const o = (input ?? {}) as Record<string, unknown>;
+  return { name: String(o.name ?? ""), phone: String(o.phone ?? "") };
+}
+
+/** Accepts sale logs from older session files that had no buyer fields. */
+function normalizeSoldLog(input: unknown): SoldEntry[] {
+  if (!Array.isArray(input)) return [];
+  return input.map((raw, i) => {
+    const s = (raw ?? {}) as Record<string, unknown>;
+    return {
+      id: String(s.id ?? `s${i}`),
+      name: String(s.name ?? ""),
+      bags: Number(s.bags) || 0,
+      perBag: Number(s.perBag) || 0,
+      amount: Number(s.amount) || 0,
+      at: String(s.at ?? new Date().toISOString()),
+      buyerName: String(s.buyerName ?? ""),
+      buyerPhone: String(s.buyerPhone ?? ""),
+    };
+  });
 }
 
 export default function EditPage() {
@@ -81,6 +121,14 @@ export default function EditPage() {
 
   const [sellId, setSellId] = useState<string | null>(null);
   const [sellQty, setSellQty] = useState("");
+  const [sellBuyer, setSellBuyer] = useState<Buyer>(EMPTY_BUYER);
+
+  // Sheet-level buyer, printed on the updated sheet PDF.
+  const [buyer, setBuyer] = useState<Buyer>(EMPTY_BUYER);
+  const [refNo, setRefNo] = useState("");
+  const [buyerRefreshKey, setBuyerRefreshKey] = useState(0);
+  /** "" = every buyer, otherwise a buyerIdentityKey. */
+  const [receiptBuyerKey, setReceiptBuyerKey] = useState("");
 
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const jsonInputRef = useRef<HTMLInputElement>(null);
@@ -98,7 +146,9 @@ export default function EditPage() {
         if (Array.isArray(saved.rows) && saved.rows.length > 0) {
           setTitle(saved.title ?? "");
           setRows(saved.rows);
-          setSoldLog(Array.isArray(saved.soldLog) ? saved.soldLog : []);
+          setSoldLog(normalizeSoldLog(saved.soldLog));
+          setBuyer(normalizeBuyer(saved.buyer));
+          setRefNo(String(saved.refNo ?? ""));
           setRestored(true);
         }
       }
@@ -112,10 +162,12 @@ export default function EditPage() {
     if (rows.length === 0 && title === "") return;
     const payload: SessionFile = {
       app: "vbuild-order-editor",
-      version: 1,
+      version: SESSION_VERSION,
       title,
       rows,
       soldLog,
+      buyer,
+      refNo,
       savedAt: new Date().toISOString(),
     };
     try {
@@ -123,7 +175,7 @@ export default function EditPage() {
     } catch {
       /* storage full or unavailable - not fatal */
     }
-  }, [title, rows, soldLog]);
+  }, [title, rows, soldLog, buyer, refNo]);
 
   /* ------------------------------ history ------------------------------ */
 
@@ -194,6 +246,10 @@ export default function EditPage() {
       setPast([]);
       setFuture([]);
       setRestored(false);
+      // A freshly loaded sheet is a new document: clear the buyer, new reference.
+      setBuyer(EMPTY_BUYER);
+      setRefNo(nextRefNo());
+      setReceiptBuyerKey("");
       setNotice(
         `Loaded ${parsed.items.length} items (${parsed.totalQty} bags)` +
           (parsed.totalsMatch
@@ -229,7 +285,10 @@ export default function EditPage() {
               : Number(r.totalOverride),
         })),
       );
-      setSoldLog(Array.isArray(data.soldLog) ? data.soldLog : []);
+      setSoldLog(normalizeSoldLog(data.soldLog));
+      setBuyer(normalizeBuyer(data.buyer));
+      setRefNo(String(data.refNo ?? ""));
+      setReceiptBuyerKey("");
       setPast([]);
       setFuture([]);
       setRestored(false);
@@ -314,15 +373,25 @@ export default function EditPage() {
         perBag: sellRow.perBag,
         amount,
         at: new Date().toISOString(),
+        buyerName: sellBuyer.name.trim(),
+        buyerPhone: sellBuyer.phone.trim(),
       },
     ]);
+
+    // Remember this buyer for quick selection next time.
+    if (hasBuyerInfo(sellBuyer)) {
+      rememberBuyer(sellBuyer);
+      setBuyerRefreshKey((k) => k + 1);
+    }
+
     setSellId(null);
     setSellQty("");
     setError(null);
     setNotice(
-      `Sold ${bags} bag(s) of ${sellRow.name} for ${formatLKR(amount)}.`,
+      `Sold ${bags} bag(s) of ${sellRow.name} for ${formatLKR(amount)}` +
+        (sellBuyer.name.trim() ? ` to ${sellBuyer.name.trim()}.` : "."),
     );
-  }, [sellRow, sellQty, snapshot]);
+  }, [sellRow, sellQty, sellBuyer, snapshot]);
 
   /* ------------------------------ derived ------------------------------ */
 
@@ -347,6 +416,38 @@ export default function EditPage() {
     }
     return { bags, revenue };
   }, [soldLog]);
+
+  /** Distinct buyers found in this session's sales, with their totals. */
+  const saleBuyers = useMemo(() => {
+    const map = new Map<
+      string,
+      { key: string; name: string; phone: string; bags: number; amount: number }
+    >();
+    for (const s of soldLog) {
+      const key = buyerIdentityKey({ name: s.buyerName, phone: s.buyerPhone });
+      const found = map.get(key);
+      if (found) {
+        found.bags += s.bags;
+        found.amount += s.amount;
+      } else {
+        map.set(key, {
+          key,
+          name: s.buyerName,
+          phone: s.buyerPhone,
+          bags: s.bags,
+          amount: s.amount,
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [soldLog]);
+
+  // If the selected receipt buyer disappears (e.g. after an undo), fall back.
+  useEffect(() => {
+    if (receiptBuyerKey && !saleBuyers.some((b) => b.key === receiptBuyerKey)) {
+      setReceiptBuyerKey("");
+    }
+  }, [saleBuyers, receiptBuyerKey]);
 
   const visibleRows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -378,6 +479,8 @@ export default function EditPage() {
         }>;
         let label: string;
         let subtitle: string;
+        // Which buyer gets printed on this document.
+        let docBuyer: Buyer = buyer;
 
         if (kind === "updated") {
           if (rows.length === 0) throw new Error("Nothing to export.");
@@ -391,12 +494,38 @@ export default function EditPage() {
           subtitle = `Updated ${today}`;
         } else {
           if (soldLog.length === 0) throw new Error("No sales recorded yet.");
+
+          // Optionally narrow the receipt to a single buyer.
+          const entries = receiptBuyerKey
+            ? soldLog.filter(
+                (s) =>
+                  buyerIdentityKey({
+                    name: s.buyerName,
+                    phone: s.buyerPhone,
+                  }) === receiptBuyerKey,
+              )
+            : soldLog;
+          if (entries.length === 0) {
+            throw new Error("There are no sales recorded for that buyer.");
+          }
+
+          // Address the receipt to the chosen buyer, or to the only buyer
+          // in the session when every sale went to the same person.
+          const chosen = receiptBuyerKey
+            ? saleBuyers.find((b) => b.key === receiptBuyerKey)
+            : saleBuyers.length === 1
+              ? saleBuyers[0]
+              : undefined;
+          if (chosen && hasBuyerInfo({ name: chosen.name, phone: chosen.phone })) {
+            docBuyer = { name: chosen.name, phone: chosen.phone };
+          }
+
           // Aggregate sales by item + price so the receipt is tidy.
           const map = new Map<
             string,
             { name: string; qty: number; perBag: number }
           >();
-          for (const s of soldLog) {
+          for (const s of entries) {
             const key = `${s.name}__${s.perBag}`;
             const found = map.get(key);
             if (found) found.qty += s.bags;
@@ -418,6 +547,8 @@ export default function EditPage() {
             label,
             subtitle,
             rows: payloadRows,
+            buyer: docBuyer,
+            refNo,
           }),
         });
         if (!res.ok) {
@@ -433,22 +564,29 @@ export default function EditPage() {
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
+
+        if (hasBuyerInfo(docBuyer)) {
+          rememberBuyer(docBuyer);
+          setBuyerRefreshKey((k) => k + 1);
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Download failed.");
       } finally {
         setBusy(null);
       }
     },
-    [rows, soldLog, title],
+    [rows, soldLog, title, buyer, refNo, receiptBuyerKey, saleBuyers],
   );
 
   const saveSession = useCallback(() => {
     const payload: SessionFile = {
       app: "vbuild-order-editor",
-      version: 1,
+      version: SESSION_VERSION,
       title,
       rows,
       soldLog,
+      buyer,
+      refNo,
       savedAt: new Date().toISOString(),
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
@@ -463,7 +601,7 @@ export default function EditPage() {
     a.remove();
     URL.revokeObjectURL(url);
     setNotice("Session file saved. Keep it to resume later.");
-  }, [title, rows, soldLog]);
+  }, [title, rows, soldLog, buyer, refNo]);
 
   const clearAll = useCallback(() => {
     if (
@@ -482,6 +620,9 @@ export default function EditPage() {
     setError(null);
     setNotice(null);
     setRestored(false);
+    setBuyer(EMPTY_BUYER);
+    setRefNo("");
+    setReceiptBuyerKey("");
     try {
       localStorage.removeItem(STORAGE_KEY);
     } catch {
@@ -648,6 +789,16 @@ export default function EditPage() {
             </div>
           </div>
 
+          {/* buyer details */}
+          <BuyerFields
+            value={buyer}
+            onChange={setBuyer}
+            refNo={refNo}
+            onRefChange={setRefNo}
+            refreshKey={buyerRefreshKey}
+            description="Printed on the updated sheet, and used as the default buyer when you record a sale."
+          />
+
           {/* toolbar */}
           <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-gray-200 bg-white p-3 shadow-sm">
             <div className="relative min-w-[180px] flex-1">
@@ -807,6 +958,8 @@ export default function EditPage() {
                               onClick={() => {
                                 setSellId(r.id);
                                 setSellQty("");
+                                // Default to the sheet buyer; can be changed.
+                                setSellBuyer(buyer);
                                 setError(null);
                               }}
                               disabled={soldOut}
@@ -871,6 +1024,12 @@ export default function EditPage() {
                     <li key={s.id} className="flex justify-between gap-4">
                       <span className="truncate">
                         {s.bags} x {s.name || "Unnamed"}
+                        {s.buyerName ? (
+                          <span className="text-emerald-700/70">
+                            {" "}
+                            &rarr; {s.buyerName}
+                          </span>
+                        ) : null}
                       </span>
                       <span className="shrink-0 font-medium">
                         {formatLKR(s.amount)}
@@ -888,7 +1047,25 @@ export default function EditPage() {
           )}
 
           {/* downloads */}
-          <div className="flex flex-wrap justify-end gap-3">
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            {saleBuyers.length > 1 && (
+              <label className="flex items-center gap-2 text-sm text-gray-600">
+                Receipt for
+                <select
+                  value={receiptBuyerKey}
+                  onChange={(e) => setReceiptBuyerKey(e.target.value)}
+                  className="rounded-lg border border-gray-300 bg-white px-2 py-2 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                >
+                  <option value="">All buyers</option>
+                  {saleBuyers.map((b) => (
+                    <option key={b.key} value={b.key}>
+                      {b.name || "(no buyer recorded)"} - {b.bags} bag
+                      {b.bags === 1 ? "" : "s"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             {soldLog.length > 0 && (
               <button
                 onClick={() => downloadPdf("sales")}
@@ -961,6 +1138,19 @@ export default function EditPage() {
               }}
               className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-lg font-semibold outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
             />
+
+            <div className="mt-4 border-t border-gray-100 pt-4">
+              <p className="mb-2 text-sm font-medium text-gray-700">
+                Buyer{" "}
+                <span className="font-normal text-gray-400">(optional)</span>
+              </p>
+              <BuyerFields
+                value={sellBuyer}
+                onChange={setSellBuyer}
+                refreshKey={buyerRefreshKey}
+                compact
+              />
+            </div>
 
             {Number(sellQty) > 0 && (
               <p className="mt-3 rounded-lg bg-brand-50 px-3 py-2 text-sm text-brand-800">

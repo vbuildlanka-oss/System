@@ -9,6 +9,7 @@ import {
 } from "@react-pdf/renderer";
 import type { BuyerPriceList } from "./types";
 import { formatLKR } from "./types";
+import { displayPhone, type Buyer } from "./buyer";
 
 const styles = StyleSheet.create({
   page: {
@@ -41,6 +42,36 @@ const styles = StyleSheet.create({
     fontSize: 9,
     marginTop: 4,
     color: "#6b7280",
+  },
+  meta: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 14,
+    borderWidth: 0.5,
+    borderColor: "#d1d5db",
+    borderRadius: 3,
+    backgroundColor: "#f9fafb",
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  metaBlock: { maxWidth: "62%" },
+  metaBlockRight: { maxWidth: "36%", alignItems: "flex-end" },
+  metaLabel: {
+    fontSize: 7,
+    fontFamily: "Helvetica-Bold",
+    letterSpacing: 1,
+    color: "#6b7280",
+    marginBottom: 3,
+  },
+  metaValue: {
+    fontSize: 10,
+    fontFamily: "Helvetica-Bold",
+    color: "#111827",
+  },
+  metaSub: {
+    fontSize: 9,
+    color: "#374151",
+    marginTop: 2,
   },
   table: { width: "100%" },
   headRow: {
@@ -100,6 +131,10 @@ export interface SheetPdfOptions {
   label?: string;
   /** Optional small line under the title, e.g. a date or note. */
   subtitle?: string;
+  /** Optional buyer the document is addressed to. */
+  buyer?: Buyer;
+  /** Optional document reference, e.g. "VB-260809-001". */
+  refNo?: string;
 }
 
 function BuyerDocument({
@@ -111,6 +146,12 @@ function BuyerDocument({
 }) {
   const label = options?.label ?? "Buyer Price List";
   const heading = label ? `${data.title} (${label})` : data.title;
+
+  const buyerName = (options?.buyer?.name ?? "").trim();
+  const buyerPhone = displayPhone(options?.buyer?.phone ?? "");
+  const refNo = (options?.refNo ?? "").trim();
+  const showMeta = buyerName !== "" || buyerPhone !== "" || refNo !== "";
+
   return (
     <Document
       author="VBUILD"
@@ -126,6 +167,30 @@ function BuyerDocument({
             <Text style={styles.subtitle}>{options.subtitle}</Text>
           ) : null}
         </View>
+
+        {showMeta ? (
+          <View style={styles.meta}>
+            <View style={styles.metaBlock}>
+              {buyerName !== "" || buyerPhone !== "" ? (
+                <>
+                  <Text style={styles.metaLabel}>PREPARED FOR</Text>
+                  {buyerName !== "" ? (
+                    <Text style={styles.metaValue}>{buyerName}</Text>
+                  ) : null}
+                  {buyerPhone !== "" ? (
+                    <Text style={styles.metaSub}>{buyerPhone}</Text>
+                  ) : null}
+                </>
+              ) : null}
+            </View>
+            {refNo !== "" ? (
+              <View style={styles.metaBlockRight}>
+                <Text style={styles.metaLabel}>REFERENCE</Text>
+                <Text style={styles.metaValue}>{refNo}</Text>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
 
         <View style={styles.table}>
           <View style={styles.headRow} fixed>
@@ -183,7 +248,10 @@ export async function renderSheetPdf(
   return renderToBuffer(<BuyerDocument data={data} options={options} />);
 }
 
-/** Backwards-compatible helper used by the buyer price list route. */
-export async function renderBuyerPdf(data: BuyerPriceList): Promise<Buffer> {
-  return renderSheetPdf(data, { label: "Buyer Price List" });
+/** Helper used by the buyer price list route. */
+export async function renderBuyerPdf(
+  data: BuyerPriceList,
+  options?: Omit<SheetPdfOptions, "label">,
+): Promise<Buffer> {
+  return renderSheetPdf(data, { ...options, label: "Buyer Price List" });
 }
