@@ -106,10 +106,6 @@ def build_pdf(source_pdf, markup=2000.0):
 
     elements = [
         Paragraph(buyer_title, title_style),
-        Paragraph(
-            "Prices include a markup of {} per bag.".format(fmt_money(markup)),
-            note_style,
-        ),
         Spacer(1, 4),
     ]
 
