@@ -32,10 +32,55 @@ export interface BuyerRow {
 
 export interface BuyerPriceList {
   title: string;
-  markup: number;
+  /** Present only when the sheet was produced by applying a markup. */
+  markup?: number;
   rows: BuyerRow[];
   totalQty: number;
   grandTotal: number;
+}
+
+/**
+ * A row while it is being edited on the Order Editor page.
+ *
+ * `total` is normally derived (qty * perBag). If the user types directly into
+ * the Total cell we store that figure in `totalOverride` so their number is
+ * preserved exactly, and the UI shows that the row is no longer auto-calculated.
+ */
+export interface EditableRow {
+  /** Stable client-side id so React keys survive sorting and deletion. */
+  id: string;
+  name: string;
+  qty: number;
+  perBag: number;
+  totalOverride: number | null;
+}
+
+/** The effective total for an editable row. */
+export function computeRowTotal(row: {
+  qty: number;
+  perBag: number;
+  totalOverride: number | null;
+}): number {
+  if (row.totalOverride !== null && Number.isFinite(row.totalOverride)) {
+    return row.totalOverride;
+  }
+  return row.qty * row.perBag;
+}
+
+/** Turn edited rows into a printable sheet, summing quantities and totals. */
+export function buildSheetFromRows(
+  title: string,
+  rows: EditableRow[],
+): BuyerPriceList {
+  let totalQty = 0;
+  let grandTotal = 0;
+  const out: BuyerRow[] = rows.map((r) => {
+    const total = computeRowTotal(r);
+    totalQty += r.qty;
+    grandTotal += total;
+    return { name: r.name, qty: r.qty, perBag: r.perBag, total };
+  });
+  return { title, rows: out, totalQty, grandTotal };
 }
 
 /** Apply a flat per-bag markup and recalculate every total. */

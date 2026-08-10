@@ -37,6 +37,11 @@ const styles = StyleSheet.create({
     marginTop: 6,
     color: "#111827",
   },
+  subtitle: {
+    fontSize: 9,
+    marginTop: 4,
+    color: "#6b7280",
+  },
   table: { width: "100%" },
   headRow: {
     flexDirection: "row",
@@ -87,18 +92,39 @@ const styles = StyleSheet.create({
   },
 });
 
-function BuyerDocument({ data }: { data: BuyerPriceList }) {
+export interface SheetPdfOptions {
+  /**
+   * Text shown in parentheses after the sheet title, e.g. "Buyer Price List".
+   * Pass an empty string to print the title on its own.
+   */
+  label?: string;
+  /** Optional small line under the title, e.g. a date or note. */
+  subtitle?: string;
+}
+
+function BuyerDocument({
+  data,
+  options,
+}: {
+  data: BuyerPriceList;
+  options?: SheetPdfOptions;
+}) {
+  const label = options?.label ?? "Buyer Price List";
+  const heading = label ? `${data.title} (${label})` : data.title;
   return (
     <Document
       author="VBUILD"
       creator="VBUILD"
       producer="VBUILD"
-      title={`${data.title} (Buyer Price List)`}
+      title={heading}
     >
       <Page size="A4" style={styles.page} wrap>
         <View style={styles.header} fixed>
           <Text style={styles.brand}>VBUILD</Text>
-          <Text style={styles.title}>{data.title} (Buyer Price List)</Text>
+          <Text style={styles.title}>{heading}</Text>
+          {options?.subtitle ? (
+            <Text style={styles.subtitle}>{options.subtitle}</Text>
+          ) : null}
         </View>
 
         <View style={styles.table}>
@@ -149,6 +175,15 @@ function BuyerDocument({ data }: { data: BuyerPriceList }) {
   );
 }
 
+/** Render any sheet (price list, updated stock sheet, sales receipt). */
+export async function renderSheetPdf(
+  data: BuyerPriceList,
+  options?: SheetPdfOptions,
+): Promise<Buffer> {
+  return renderToBuffer(<BuyerDocument data={data} options={options} />);
+}
+
+/** Backwards-compatible helper used by the buyer price list route. */
 export async function renderBuyerPdf(data: BuyerPriceList): Promise<Buffer> {
-  return renderToBuffer(<BuyerDocument data={data} />);
+  return renderSheetPdf(data, { label: "Buyer Price List" });
 }
