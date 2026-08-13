@@ -38,6 +38,14 @@ export interface RequestItem {
   qty: number;
   /** Bags supplied so far. Never more than `qty`. */
   supplied: number;
+  /**
+   * Price per bag agreed with this buyer, in LKR.
+   *
+   * A request is a quote in the making, so unlike a bag manifest it does carry
+   * money. Line and grand totals are always derived from this and the bag
+   * counts, never stored, so a figure cannot drift from the rows above it.
+   */
+  perBag: number;
   note: string;
 }
 
@@ -55,6 +63,8 @@ export interface BuyerRequest {
 export interface SourceItem {
   name: string;
   qty: number;
+  /** Price per bag from the file, or 0 when it carried no prices. */
+  perBag: number;
 }
 
 /**
@@ -105,6 +115,16 @@ export function outstanding(item: RequestItem): number {
   return Math.max(0, item.qty - item.supplied);
 }
 
+/** What a line is worth at the agreed price. */
+export function lineValue(item: RequestItem): number {
+  return item.qty * item.perBag;
+}
+
+/** What has actually gone out on a line is worth. */
+export function suppliedValue(item: RequestItem): number {
+  return Math.min(item.supplied, item.qty) * item.perBag;
+}
+
 export interface RequestTotals {
   lines: number;
   requested: number;
@@ -112,6 +132,14 @@ export interface RequestTotals {
   outstanding: number;
   /** Lines with nothing left to supply. */
   completeLines: number;
+  /** Value of everything asked for, in LKR. */
+  value: number;
+  /** Value of what has been supplied so far. */
+  suppliedValue: number;
+  /** Value still to go out. */
+  outstandingValue: number;
+  /** True when at least one line has no price yet. */
+  hasUnpriced: boolean;
 }
 
 export function requestTotals(request: BuyerRequest): RequestTotals {
@@ -119,19 +147,31 @@ export function requestTotals(request: BuyerRequest): RequestTotals {
   let supplied = 0;
   let out = 0;
   let completeLines = 0;
+  let value = 0;
+  let suppliedVal = 0;
+  let hasUnpriced = false;
+
   for (const item of request.items) {
     requested += item.qty;
     supplied += item.supplied;
     const o = outstanding(item);
     out += o;
     if (o === 0) completeLines += 1;
+    value += lineValue(item);
+    suppliedVal += suppliedValue(item);
+    if (item.perBag <= 0) hasUnpriced = true;
   }
+
   return {
     lines: request.items.length,
     requested,
     supplied,
     outstanding: out,
     completeLines,
+    value,
+    suppliedValue: suppliedVal,
+    outstandingValue: Math.max(0, value - suppliedVal),
+    hasUnpriced,
   };
 }
 
@@ -221,7 +261,7 @@ export function matchRequest(
 /* -------------------------------- sources -------------------------------- */
 
 export function toSourceItems(
-  source: Array<{ name?: unknown; qty?: unknown }>,
+  source: Array<{ name?: unknown; qty?: unknown; perBag?: unknown }>,
 ): SourceItem[] {
   const out: SourceItem[] = [];
   for (const raw of source) {
@@ -229,7 +269,7 @@ export function toSourceItems(
     const name = sanitizeLine(row.name, LIMITS.itemName);
     if (!name) continue;
     const qty = Math.max(1, Math.floor(clampNumber(row.qty, LIMITS.qty)));
-    out.push({ name, qty });
+    out.push({ name, qty, perBag: clampNumber(row.perBag, LIMITS.money) });
   }
   return out;
 }
@@ -309,7 +349,13 @@ export const ALL_SOURCES_ID = "all";
 
 export function createRequest(
   buyer: Buyer,
-  items: Array<{ name?: unknown; qty?: unknown; note?: unknown }> = [],
+  items: Array<{
+    name?: unknown;
+    qty?: unknown;
+    note?: unknown;
+    perBag?: unknown;
+    supplied?: unknown;
+  }> = [],
 ): BuyerRequest {
   const now = new Date().toISOString();
   return {
@@ -326,7 +372,13 @@ export function createRequest(
 }
 
 export function toRequestItems(
-  source: Array<{ name?: unknown; qty?: unknown; note?: unknown; supplied?: unknown }>,
+  source: Array<{
+    name?: unknown;
+    qty?: unknown;
+    note?: unknown;
+    supplied?: unknown;
+    perBag?: unknown;
+  }>,
 ): RequestItem[] {
   const out: RequestItem[] = [];
   for (const raw of source) {
@@ -344,6 +396,7 @@ export function toRequestItems(
       name,
       qty,
       supplied,
+      perBag: clampNumber(row.perBag, LIMITS.money),
       note: sanitizeLine(row.note, 120),
     });
   }
@@ -512,6 +565,19 @@ export function saveRequests(doc: RequestDoc): void {
 
 /* --------------------------------- export --------------------------------- */
 
+/**
+ * `<Buyer> - Requested Bags.pdf`
+ *
+ * Lives here rather than beside the PDF renderer so the page can name a
+ * download without pulling the whole PDF library into the browser bundle.
+ */
+export function requestPdfFilename(buyerName: string): string {
+  const base = String(buyerName ?? "")
+    .replace(/[^\w\d\- ]+/g, "")
+    .trim();
+  return `${base || "Buyer"} - Requested Bags.pdf`;
+}
+
 function csvCell(value: string | number): string {
   const s = String(value);
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -530,6 +596,8 @@ export function requestsToCsv(
     "Supplied",
     "Outstanding",
     "Available",
+    "Per Bag",
+    "Total",
     "Note",
   ];
   const lines = [header.map(csvCell).join(",")];
@@ -546,6 +614,8 @@ export function requestsToCsv(
           item.supplied,
           outstanding(item),
           matches ? matches[i].inStock : "",
+          item.perBag,
+          lineValue(item),
           item.note,
         ]
           .map(csvCell)

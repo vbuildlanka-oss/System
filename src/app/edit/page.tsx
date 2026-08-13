@@ -42,10 +42,16 @@ import {
 } from "@/lib/buyer";
 import BuyerFields from "@/components/BuyerFields";
 import { addLots, loadStockpile, saveStockpile } from "@/lib/stockpile";
+import { orderNumberFromFilename } from "@/lib/bagManifest";
 import { readLocal, removeLocal, writeLocal } from "@/lib/storage";
 import { cn } from "@/lib/cn";
 
-const STORAGE_KEY = "balebook.orderEditor.v1";
+/**
+ * v3 holds several sheets at once. Earlier versions held a single sheet, and are
+ * migrated into the first tab on load so nothing is lost.
+ */
+const STORAGE_KEY = "balebook.orderEditor.v3";
+const STORAGE_KEY_V1 = "balebook.orderEditor.v1";
 const STORAGE_KEY_LEGACY = "vbuild.orderEditor.v1";
 
 interface SoldEntry {
@@ -79,6 +85,24 @@ interface SessionFile {
 
 const SESSION_VERSION = 2;
 
+/** One open sheet. Several can be worked on side by side. */
+interface SheetRecord {
+  id: string;
+  title: string;
+  rows: EditableRow[];
+  soldLog: SoldEntry[];
+  buyer: Buyer;
+  refNo: string;
+}
+
+interface EditorDoc {
+  app: "balebook-order-editor";
+  version: 3;
+  sheets: SheetRecord[];
+  activeId: string | null;
+  savedAt: string;
+}
+
 let idCounter = 0;
 function newId(): string {
   idCounter += 1;
@@ -108,7 +132,28 @@ function normalizeSoldLog(input: unknown): SoldEntry[] {
   });
 }
 
+/** Coerce anything read from storage or a file into a usable sheet. */
+function normalizeSheet(input: unknown): SheetRecord {
+  const s = (input ?? {}) as Record<string, unknown>;
+  return {
+    id: String(s.id ?? newId()),
+    title: String(s.title ?? ""),
+    rows: Array.isArray(s.rows) ? (s.rows as EditableRow[]) : [],
+    soldLog: normalizeSoldLog(s.soldLog),
+    buyer: normalizeBuyer(s.buyer),
+    refNo: String(s.refNo ?? ""),
+  };
+}
+
 export default function EditPage() {
+  /**
+   * Every open sheet. The one being edited is mirrored into the working state
+   * below; `sheets` holds the others and is refreshed from the working state
+   * whenever tabs are switched or the file is saved.
+   */
+  const [sheets, setSheets] = useState<SheetRecord[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+
   const [title, setTitle] = useState("");
   const [rows, setRows] = useState<EditableRow[]>([]);
   const [soldLog, setSoldLog] = useState<SoldEntry[]>([]);
@@ -141,46 +186,145 @@ export default function EditPage() {
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const jsonInputRef = useRef<HTMLInputElement>(null);
 
-  const hasSheet = rows.length > 0 || title !== "";
+  const hasSheet = sheets.length > 0;
 
   /* ---------------------------- persistence ---------------------------- */
+
+  /** Load the working state from a sheet record. */
+  const hydrate = useCallback((sheet: SheetRecord | undefined) => {
+    setTitle(sheet?.title ?? "");
+    setRows(sheet?.rows ?? []);
+    setSoldLog(sheet?.soldLog ?? []);
+    setBuyer(sheet?.buyer ?? EMPTY_BUYER);
+    setRefNo(sheet?.refNo ?? "");
+    setGeneratedRef(sheet?.refNo ?? "");
+    setPast([]);
+    setFuture([]);
+    setSearch("");
+  }, []);
 
   // Restore autosaved work on first mount.
   useEffect(() => {
     try {
-      const raw = readLocal(STORAGE_KEY, STORAGE_KEY_LEGACY);
+      const raw = readLocal(STORAGE_KEY);
       if (raw) {
-        const saved = JSON.parse(raw) as SessionFile;
+        const doc = JSON.parse(raw) as EditorDoc;
+        const loaded = (Array.isArray(doc.sheets) ? doc.sheets : [])
+          .map(normalizeSheet)
+          .filter((s) => s.rows.length > 0 || s.title !== "");
+        if (loaded.length > 0) {
+          const active =
+            loaded.find((s) => s.id === doc.activeId) ?? loaded[0];
+          setSheets(loaded);
+          setActiveId(active.id);
+          hydrate(active);
+          setRestored(true);
+          return;
+        }
+      }
+
+      // Nothing in v3: bring across a single sheet saved by an earlier version.
+      const legacy = readLocal(STORAGE_KEY_V1, STORAGE_KEY_LEGACY);
+      if (legacy) {
+        const saved = JSON.parse(legacy) as SessionFile;
         if (Array.isArray(saved.rows) && saved.rows.length > 0) {
-          setTitle(saved.title ?? "");
-          setRows(saved.rows);
-          setSoldLog(normalizeSoldLog(saved.soldLog));
-          setBuyer(normalizeBuyer(saved.buyer));
-          setRefNo(String(saved.refNo ?? ""));
-          setGeneratedRef(String(saved.refNo ?? ""));
+          const sheet = normalizeSheet({ ...saved, id: newId() });
+          setSheets([sheet]);
+          setActiveId(sheet.id);
+          hydrate(sheet);
           setRestored(true);
         }
       }
     } catch {
       /* ignore corrupted autosave */
     }
-  }, []);
+  }, [hydrate]);
 
-  // Autosave whenever the sheet changes.
+  /**
+   * Autosave. The working state is folded over the active sheet on the way out,
+   * so this never has to write back into React state and cannot loop.
+   */
   useEffect(() => {
-    if (rows.length === 0 && title === "") return;
-    const payload: SessionFile = {
+    if (sheets.length === 0) return;
+    const doc: EditorDoc = {
       app: "balebook-order-editor",
-      version: SESSION_VERSION,
-      title,
-      rows,
-      soldLog,
-      buyer,
-      refNo,
+      version: 3,
+      sheets: sheets.map((s) =>
+        s.id === activeId
+          ? { id: s.id, title, rows, soldLog, buyer, refNo }
+          : s,
+      ),
+      activeId,
       savedAt: new Date().toISOString(),
     };
-    writeLocal(STORAGE_KEY, JSON.stringify(payload));
-  }, [title, rows, soldLog, buyer, refNo]);
+    writeLocal(STORAGE_KEY, JSON.stringify(doc));
+  }, [sheets, activeId, title, rows, soldLog, buyer, refNo]);
+
+  /* ------------------------------- sheets ------------------------------- */
+
+  /** The sheet list with the working state folded into the active entry. */
+  const commitActive = useCallback(
+    (): SheetRecord[] =>
+      sheets.map((s) =>
+        s.id === activeId
+          ? { id: s.id, title, rows, soldLog, buyer, refNo }
+          : s,
+      ),
+    [sheets, activeId, title, rows, soldLog, buyer, refNo],
+  );
+
+  const switchSheet = useCallback(
+    (id: string) => {
+      if (id === activeId) return;
+      const committed = commitActive();
+      const target = committed.find((s) => s.id === id);
+      if (!target) return;
+      setSheets(committed);
+      setActiveId(id);
+      hydrate(target);
+    },
+    [activeId, commitActive, hydrate],
+  );
+
+  /** Open another sheet without disturbing the ones already open. */
+  const openSheet = useCallback(
+    (sheet: SheetRecord) => {
+      const committed = commitActive();
+      setSheets([...committed, sheet]);
+      setActiveId(sheet.id);
+      hydrate(sheet);
+    },
+    [commitActive, hydrate],
+  );
+
+  const closeSheet = useCallback(
+    (id: string) => {
+      const sheet = sheets.find((s) => s.id === id);
+      const label = sheet?.title?.trim() || "this sheet";
+      if (
+        !window.confirm(
+          `Close ${label}?\n\nAnything not saved to a file or moved to the stockpile will be lost.`,
+        )
+      ) {
+        return;
+      }
+
+      const committed = commitActive().filter((s) => s.id !== id);
+      setSheets(committed);
+
+      if (id === activeId) {
+        const next = committed[0];
+        setActiveId(next?.id ?? null);
+        hydrate(next);
+      }
+      if (committed.length === 0) {
+        removeLocal(STORAGE_KEY, STORAGE_KEY_V1);
+        removeLocal(STORAGE_KEY_V1, STORAGE_KEY_LEGACY);
+      }
+      setNotice(`Closed ${label}.`);
+    },
+    [sheets, activeId, commitActive, hydrate],
+  );
 
   /* ------------------------------ history ------------------------------ */
 
@@ -234,89 +378,91 @@ export default function EditPage() {
 
   /* ------------------------------ loading ------------------------------ */
 
-  const loadPdf = useCallback(async (file: File) => {
-    setError(null);
-    setNotice(null);
-    setLoading(true);
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch("/api/process", { method: "POST", body: fd });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to read the PDF.");
-      const parsed = data as ParsedOrder;
-      setTitle(parsed.title);
-      setRows(
-        parsed.items.map((it) => ({
-          id: newId(),
-          name: it.name,
-          qty: it.qty,
-          perBag: it.perBag,
-          totalOverride: null,
-        })),
-      );
-      setSoldLog([]);
-      setPast([]);
-      setFuture([]);
-      setRestored(false);
-      // A freshly loaded sheet is a new document: clear the buyer, new reference.
-      setBuyer(EMPTY_BUYER);
-      {
-        const ref = nextRefNo();
-        setRefNo(ref);
-        setGeneratedRef(ref);
-      }
-      setReceiptBuyerKey("");
-      setNotice(
-        `Loaded ${parsed.items.length} items (${parsed.totalQty} bags)` +
-          (parsed.totalsMatch
-            ? " - totals verified against the PDF."
-            : " - warning: totals did not match the PDF, please review."),
-      );
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong.");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  /** Read an order file and open it as another sheet. */
+  const loadPdf = useCallback(
+    async (file: File) => {
+      setError(null);
+      setNotice(null);
+      setLoading(true);
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        const res = await fetch("/api/process", { method: "POST", body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to read the file.");
+        const parsed = data as ParsedOrder;
 
-  const loadSession = useCallback(async (file: File) => {
-    setError(null);
-    setNotice(null);
-    try {
-      const text = await file.text();
-      const data = JSON.parse(text) as SessionFile;
-      if (!Array.isArray(data.rows)) {
-        throw new Error("That file is not a valid saved session.");
+        const ref = nextRefNo();
+        openSheet({
+          id: newId(),
+          // The number in the file name is what gets tracked.
+          title: orderNumberFromFilename(file.name) || parsed.title,
+          rows: parsed.items.map((it) => ({
+            id: newId(),
+            name: it.name,
+            qty: it.qty,
+            perBag: it.perBag,
+            totalOverride: null,
+          })),
+          soldLog: [],
+          buyer: EMPTY_BUYER,
+          refNo: ref,
+        });
+        setReceiptBuyerKey("");
+        setRestored(false);
+        setNotice(
+          `Opened ${parsed.items.length} items (${parsed.totalQty} bags) from ${file.name}` +
+            (parsed.totalsMatch
+              ? " - totals verified against the file."
+              : " - warning: totals did not match the file, please review."),
+        );
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Something went wrong.");
+      } finally {
+        setLoading(false);
       }
-      setTitle(data.title ?? "");
-      setRows(
-        data.rows.map((r) => ({
-          id: r.id || newId(),
-          name: String(r.name ?? ""),
-          qty: Number(r.qty) || 0,
-          perBag: Number(r.perBag) || 0,
-          totalOverride:
-            r.totalOverride === null || r.totalOverride === undefined
-              ? null
-              : Number(r.totalOverride),
-        })),
-      );
-      setSoldLog(normalizeSoldLog(data.soldLog));
-      setBuyer(normalizeBuyer(data.buyer));
-      setRefNo(String(data.refNo ?? ""));
-      setGeneratedRef(String(data.refNo ?? ""));
-      setReceiptBuyerKey("");
-      setPast([]);
-      setFuture([]);
-      setRestored(false);
-      setNotice(`Session restored (${data.rows.length} items).`);
-    } catch (e) {
-      setError(
-        e instanceof Error ? e.message : "Could not read that session file.",
-      );
-    }
-  }, []);
+    },
+    [openSheet],
+  );
+
+  /** Open a saved session file as another sheet. */
+  const loadSession = useCallback(
+    async (file: File) => {
+      setError(null);
+      setNotice(null);
+      try {
+        const data = JSON.parse(await file.text()) as SessionFile;
+        if (!Array.isArray(data.rows)) {
+          throw new Error("That file is not a valid saved session.");
+        }
+        openSheet({
+          id: newId(),
+          title: data.title ?? "",
+          rows: data.rows.map((r) => ({
+            id: r.id || newId(),
+            name: String(r.name ?? ""),
+            qty: Number(r.qty) || 0,
+            perBag: Number(r.perBag) || 0,
+            totalOverride:
+              r.totalOverride === null || r.totalOverride === undefined
+                ? null
+                : Number(r.totalOverride),
+          })),
+          soldLog: normalizeSoldLog(data.soldLog),
+          buyer: normalizeBuyer(data.buyer),
+          refNo: String(data.refNo ?? ""),
+        });
+        setReceiptBuyerKey("");
+        setRestored(false);
+        setNotice(`Session opened (${data.rows.length} items).`);
+      } catch (e) {
+        setError(
+          e instanceof Error ? e.message : "Could not read that session file.",
+        );
+      }
+    },
+    [openSheet],
+  );
 
   /* ------------------------------ editing ------------------------------ */
 
@@ -667,44 +813,17 @@ export default function EditPage() {
     );
   }, [rows, title]);
 
-  /** Loading a new sheet replaces everything, so confirm first if work exists. */
+  /** Opening another file no longer replaces anything, so just pick one. */
   const requestNewPdf = useCallback(() => {
-    if (
-      rows.length > 0 &&
-      !window.confirm(
-        "Load a different sheet?\n\nThe current sheet and this session's sales will be replaced. Save the session first if you need to keep it.",
-      )
-    ) {
-      return;
-    }
     pdfInputRef.current?.click();
-  }, [rows.length]);
+  }, []);
 
+  /** Close the sheet being worked on. Other open sheets are left alone. */
   const clearAll = useCallback(() => {
-    if (
-      !window.confirm(
-        "Clear the current sheet? Download the PDF or save the session first if you need it.",
-      )
-    ) {
-      return;
-    }
-    setTitle("");
-    setRows([]);
-    setSoldLog([]);
-    setGeneratedRef("");
-    setPast([]);
-    setFuture([]);
-    setSearch("");
-    setError(null);
-    setNotice(null);
-    setRestored(false);
-    setBuyer(EMPTY_BUYER);
-    setRefNo("");
-    setReceiptBuyerKey("");
-    removeLocal(STORAGE_KEY, STORAGE_KEY_LEGACY);
+    if (activeId) closeSheet(activeId);
     if (pdfInputRef.current) pdfInputRef.current.value = "";
     if (jsonInputRef.current) jsonInputRef.current.value = "";
-  }, []);
+  }, [activeId, closeSheet]);
 
   /* -------------------------------- view -------------------------------- */
 
@@ -829,6 +948,62 @@ export default function EditPage() {
       {/* editor */}
       {hasSheet && (
         <div className="animate-fade-in space-y-5">
+          {/* open sheets */}
+          <div className="flex flex-wrap items-center gap-1.5 border-b border-gray-200 pb-2">
+            {sheets.map((sheet) => {
+              const isActive = sheet.id === activeId;
+              // The active tab shows the live title as it is typed.
+              const label =
+                (isActive ? title : sheet.title).trim() || "Untitled sheet";
+              const bags = (isActive ? rows : sheet.rows).reduce(
+                (s, r) => s + r.qty,
+                0,
+              );
+              return (
+                <div
+                  key={sheet.id}
+                  className={cn(
+                    "group flex items-center gap-1 rounded-t-lg border border-b-0 px-3 py-2 text-sm transition",
+                    isActive
+                      ? "border-gray-200 bg-white font-semibold text-brand-700 shadow-sm"
+                      : "border-transparent bg-gray-100/70 text-gray-600 hover:bg-gray-200/70",
+                  )}
+                >
+                  <button
+                    onClick={() => switchSheet(sheet.id)}
+                    className="max-w-[190px] truncate"
+                    title={`${label} · ${bags} bags`}
+                  >
+                    {label}
+                    <span className="ml-2 text-xs font-normal text-gray-400">
+                      {bags}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => closeSheet(sheet.id)}
+                    title="Close this sheet"
+                    className="rounded p-0.5 text-gray-400 opacity-0 transition hover:bg-gray-200 hover:text-gray-700 group-hover:opacity-100"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              );
+            })}
+            <button
+              onClick={requestNewPdf}
+              disabled={loading}
+              title="Open another order file"
+              className="ml-1 inline-flex items-center gap-1 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-100 disabled:opacity-50"
+            >
+              {loading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Plus className="h-4 w-4" />
+              )}
+              Open file
+            </button>
+          </div>
+
           {/* title + stats */}
           <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
             <label

@@ -115,9 +115,16 @@ right now.
 - One list per buyer, each line holding the item, bags wanted, and bags supplied
   so far. **Outstanding is always derived** from those two, so a line cannot
   disagree with itself.
-- **Live availability** against the stockpile, matched on the same normalised
-  name the stockpile uses — so `Anorak #2` on a buyer's list finds `Anorak 2` in
-  stock. Each line reads **in stock**, **part only**, **none**, or **supplied**.
+- **Check against whatever holds the bags.** Most stock is in a container rather
+  than the stockpile, so container and order files can be uploaded as
+  availability sources. A selector switches between the stockpile, any one
+  container, or everything added together.
+- **Live availability**, matched on the same normalised name the stockpile uses —
+  so `Anorak #2` on a buyer's list finds `Anorak 2` wherever the bags are. Each
+  line reads **in stock**, **part only**, **none**, or **supplied**.
+- Supplying against the **stockpile** withdraws the bags. Supplying against a
+  **container file** only records it — the file is a record of what shipped, so
+  it is left alone.
 - **Supply from stock in one step**: the bags leave the stockpile (oldest batch
   first) and are recorded against the request together, so the two can't drift
   apart. The withdrawal is logged against the buyer's name. If the numbers don't

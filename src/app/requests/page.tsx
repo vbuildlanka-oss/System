@@ -18,10 +18,11 @@ import {
   Minus,
   UploadCloud,
   Loader2,
+  FileDown,
 } from "lucide-react";
 import BuyerFields from "@/components/BuyerFields";
 import { EMPTY_BUYER, rememberBuyer, hasBuyerInfo, type Buyer } from "@/lib/buyer";
-import type { ParsedOrder } from "@/lib/types";
+import { formatLKR, type ParsedOrder } from "@/lib/types";
 import {
   addSource,
   ALL_SOURCES_ID,
@@ -37,7 +38,9 @@ import {
   outstanding,
   parseRequestDoc,
   removeRequest,
+  lineValue,
   removeSource,
+  requestPdfFilename,
   requestStatus,
   requestTotals,
   requestsToCsv,
@@ -50,10 +53,13 @@ import {
   type BuyerRequest,
   type LineAvailability,
   type RequestDoc,
+  type RequestItem,
 } from "@/lib/buyerRequest";
 import {
+  itemAvgPerBag,
   itemBags,
   loadStockpile,
+  normalizeItemKey,
   saveStockpile,
   type Stockpile,
 } from "@/lib/stockpile";
@@ -81,13 +87,18 @@ export default function RequestsPage() {
   const [search, setSearch] = useState("");
   const [importing, setImporting] = useState(false);
   const [addingSource, setAddingSource] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   /** Which pool of bags requests are checked against. */
   const [sourceId, setSourceId] = useState<string>(STOCKPILE_SOURCE_ID);
   const [buyerRefreshKey, setBuyerRefreshKey] = useState(0);
 
-  // New-line form
+  // Picker: search across the selected source, with a bags box per row.
+  const [pickSearch, setPickSearch] = useState("");
+  const [rowQty, setRowQty] = useState<Record<string, string>>({});
+  // Manual entry, for something that is not in any uploaded file.
   const [newName, setNewName] = useState("");
   const [newQty, setNewQty] = useState("");
+  const [newPerBag, setNewPerBag] = useState("");
   const [newNote, setNewNote] = useState("");
 
   const jsonRef = useRef<HTMLInputElement>(null);
@@ -197,7 +208,9 @@ export default function RequestsPage() {
       setError("Enter how many bags they want.");
       return;
     }
-    const [line] = toRequestItems([{ name, qty, note: newNote }]);
+    const [line] = toRequestItems([
+      { name, qty, note: newNote, perBag: Number(newPerBag) || 0 },
+    ]);
     if (!line) {
       setError("That item could not be added.");
       return;
@@ -205,9 +218,53 @@ export default function RequestsPage() {
     save({ ...active, items: [...active.items, line] });
     setNewName("");
     setNewQty("");
+    setNewPerBag("");
     setNewNote("");
     setError(null);
-  }, [active, newName, newQty, newNote, save]);
+  }, [active, newName, newQty, newPerBag, newNote, save]);
+
+  /**
+   * Add bags of a catalogue item to the list. If the buyer already has that
+   * item, the existing line goes up rather than a second line appearing.
+   */
+  const addFromCatalogue = useCallback(
+    (name: string, bags: number, perBag = 0) => {
+      if (!active) return;
+      if (!Number.isFinite(bags) || bags <= 0) {
+        setError("Enter how many bags they want.");
+        return;
+      }
+      const key = normalizeItemKey(name);
+      const existing = active.items.find(
+        (i) => normalizeItemKey(i.name) === key,
+      );
+
+      if (existing) {
+        save({
+          ...active,
+          items: active.items.map((i) =>
+            i.id === existing.id
+              ? { ...i, qty: Math.floor(i.qty + bags) }
+              : i,
+          ),
+        });
+        setNotice(
+          `${name}: now ${Math.floor(existing.qty + bags)} bags on the list.`,
+        );
+      } else {
+        const [line] = toRequestItems([{ name, qty: bags, perBag }]);
+        if (!line) {
+          setError("That item could not be added.");
+          return;
+        }
+        save({ ...active, items: [...active.items, line] });
+        setNotice(`Added ${bags} bags of ${name}.`);
+      }
+      setError(null);
+      setRowQty((prev) => ({ ...prev, [key]: "" }));
+    },
+    [active, save],
+  );
 
   const removeLine = useCallback(
     (itemId: string) => {
@@ -219,7 +276,10 @@ export default function RequestsPage() {
 
   /** Edit a line in place, so anything read wrongly from a file can be fixed. */
   const updateLine = useCallback(
-    (itemId: string, patch: { name?: string; qty?: number }) => {
+    (
+      itemId: string,
+      patch: { name?: string; qty?: number; perBag?: number },
+    ) => {
       if (!active) return;
       save({
         ...active,
@@ -233,6 +293,10 @@ export default function RequestsPage() {
             ...i,
             name: patch.name === undefined ? i.name : patch.name,
             qty,
+            perBag:
+              patch.perBag === undefined
+                ? i.perBag
+                : Math.max(0, patch.perBag || 0),
             // Lowering what they want must not leave more supplied than asked.
             supplied: Math.min(i.supplied, qty),
           };
@@ -425,6 +489,49 @@ export default function RequestsPage() {
     [persist],
   );
 
+  /** Download the open list as a PDF, which doubles as a picking list. */
+  const exportPdf = useCallback(async () => {
+    if (!active) return;
+    if (active.items.length === 0) {
+      setError("Add some items before downloading.");
+      return;
+    }
+    setDownloading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/request-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          buyerName: active.buyer.name,
+          buyerPhone: active.buyer.phone,
+          notes: active.notes,
+          subtitle: new Date().toLocaleDateString("en-GB", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+          }),
+          items: active.items.map((i) => ({
+            name: i.name,
+            qty: i.qty,
+            supplied: i.supplied,
+            perBag: i.perBag,
+            note: i.note,
+          })),
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Download failed.");
+      }
+      downloadBlob(await res.blob(), requestPdfFilename(active.buyer.name));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Download failed.");
+    } finally {
+      setDownloading(false);
+    }
+  }, [active, downloadBlob]);
+
   const exportCsv = useCallback(() => {
     if (!doc || doc.requests.length === 0) {
       setError("There is nothing to export yet.");
@@ -456,14 +563,80 @@ export default function RequestsPage() {
     return matches.filter((m) => m.item.name.toLowerCase().includes(q));
   }, [matches, search]);
 
-  /** Item names already in the stockpile, to help type a line quickly. */
-  const stockNames = useMemo(() => {
-    if (!stockpile) return [];
-    return stockpile.items
-      .filter((i) => itemBags(i) > 0)
-      .map((i) => i.name)
-      .sort((a, b) => a.localeCompare(b));
-  }, [stockpile]);
+  /**
+   * Everything that can be picked from, gathered out of whichever source is
+   * selected: the item, how many bags are there, and which files it came from.
+   * Aggregated on the normalised name so the same item across two files is one
+   * entry rather than two.
+   */
+  const catalogue = useMemo(() => {
+    const entries = new Map<
+      string,
+      {
+        key: string;
+        name: string;
+        available: number;
+        perBag: number;
+        from: string[];
+      }
+    >();
+
+    const add = (
+      name: string,
+      qty: number,
+      origin: string,
+      perBag: number,
+    ) => {
+      if (qty <= 0) return;
+      const key = normalizeItemKey(name);
+      const found = entries.get(key);
+      if (found) {
+        found.available += qty;
+        // Keep the first price seen; a later file with no prices must not
+        // wipe out one that had them.
+        if (found.perBag <= 0 && perBag > 0) found.perBag = perBag;
+        if (!found.from.includes(origin)) found.from.push(origin);
+      } else {
+        entries.set(key, { key, name, available: qty, perBag, from: [origin] });
+      }
+    };
+
+    const includeStockpile =
+      sourceId === STOCKPILE_SOURCE_ID || sourceId === ALL_SOURCES_ID;
+    if (includeStockpile && stockpile) {
+      for (const item of stockpile.items) {
+        add(item.name, itemBags(item), "Stockpile", itemAvgPerBag(item));
+      }
+    }
+    for (const source of sources) {
+      if (sourceId === ALL_SOURCES_ID || sourceId === source.id) {
+        for (const item of source.items)
+          add(item.name, item.qty, source.name, item.perBag);
+      }
+    }
+
+    return Array.from(entries.values()).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+  }, [stockpile, sources, sourceId]);
+
+  /** Catalogue entries matching the picker search. */
+  const picked = useMemo(() => {
+    const q = pickSearch.trim().toLowerCase();
+    if (!q) return catalogue.slice(0, 40);
+    return catalogue
+      .filter((c) => c.name.toLowerCase().includes(q))
+      .slice(0, 40);
+  }, [catalogue, pickSearch]);
+
+  /** What the buyer already has on this list, by normalised name. */
+  const alreadyOnList = useMemo(() => {
+    const map = new Map<string, RequestItem>();
+    for (const item of active?.items ?? []) {
+      map.set(normalizeItemKey(item.name), item);
+    }
+    return map;
+  }, [active]);
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-8 sm:py-12">
@@ -656,6 +829,18 @@ export default function RequestsPage() {
                   <FileSpreadsheet className="h-4 w-4" />
                   Export CSV
                 </button>
+                <button
+                  onClick={exportPdf}
+                  disabled={downloading || !active || active.items.length === 0}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-40"
+                >
+                  {downloading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <FileDown className="h-4 w-4" />
+                  )}
+                  Download PDF
+                </button>
               </div>
             </div>
           </aside>
@@ -761,6 +946,26 @@ export default function RequestsPage() {
                   />
                 </div>
 
+                <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  <Stat label="Order value" value={formatLKR(totals.value)} />
+                  <Stat
+                    label="Supplied value"
+                    value={formatLKR(totals.suppliedValue)}
+                  />
+                  <Stat
+                    label="Still to invoice"
+                    value={formatLKR(totals.outstandingValue)}
+                  />
+                </div>
+
+                {totals.hasUnpriced && totals.lines > 0 && (
+                  <p className="mt-3 flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    Some lines have no price yet, so the value above is only
+                    part of the order.
+                  </p>
+                )}
+
                 {totals.lines > 0 && (
                   <p className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-600">
                     <span className="flex items-center gap-1.5">
@@ -801,34 +1006,147 @@ export default function RequestsPage() {
                 </div>
               </div>
 
-              {/* Add a line */}
-              <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-                <div className="flex flex-wrap items-end gap-3">
-                  <div className="min-w-[180px] flex-1">
+              {/* Pick items from the uploaded file */}
+              <div className="rounded-2xl border border-gray-200 bg-white shadow-sm">
+                <div className="flex flex-wrap items-center gap-3 border-b border-gray-100 px-4 py-3">
+                  <div className="relative min-w-[200px] flex-1">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                    <input
+                      value={pickSearch}
+                      onChange={(e) => setPickSearch(e.target.value)}
+                      placeholder={`Search ${sourceLabel} for an item...`}
+                      className="w-full rounded-lg border border-gray-300 py-2 pl-9 pr-3 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                    />
+                  </div>
+                  <span className="text-xs text-gray-400">
+                    {catalogue.length} item{catalogue.length === 1 ? "" : "s"} in{" "}
+                    {sourceLabel}
+                  </span>
+                </div>
+
+                {catalogue.length === 0 ? (
+                  <div className="px-4 py-8 text-center">
+                    <p className="text-sm text-gray-500">
+                      Nothing to pick from yet. Add a container file, or type an
+                      item in by hand below.
+                    </p>
+                    <button
+                      onClick={() => sourceRef.current?.click()}
+                      className="mt-3 inline-flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
+                    >
+                      <UploadCloud className="h-4 w-4" />
+                      Add container file
+                    </button>
+                  </div>
+                ) : (
+                  <div className="preview-scroll max-h-72 overflow-auto">
+                    <table className="w-full border-collapse text-sm">
+                      <tbody>
+                        {picked.length === 0 && (
+                          <tr>
+                            <td className="px-4 py-8 text-center text-sm text-gray-500">
+                              No item matches “{pickSearch}”. You can still add
+                              it by hand below.
+                            </td>
+                          </tr>
+                        )}
+                        {picked.map((entry, idx) => {
+                          const onList = alreadyOnList.get(entry.key);
+                          return (
+                            <tr
+                              key={entry.key}
+                              className={cn(
+                                "border-b border-gray-100 last:border-0",
+                                idx % 2 === 1 && "bg-gray-50/60",
+                              )}
+                            >
+                              <td className="px-4 py-2">
+                                <span className="font-medium text-gray-800">
+                                  {entry.name}
+                                </span>
+                                <span className="block text-xs text-gray-400">
+                                  {entry.available} bags in{" "}
+                                  {entry.from.join(", ")}
+                                  {entry.perBag > 0
+                                    ? ` · ${formatLKR(entry.perBag)}/bag`
+                                    : ""}
+                                  {onList
+                                    ? ` · ${onList.qty} already on this list`
+                                    : ""}
+                                </span>
+                              </td>
+                              <td className="w-24 px-2 py-2">
+                                <input
+                                  value={rowQty[entry.key] ?? ""}
+                                  onChange={(e) =>
+                                    setRowQty((prev) => ({
+                                      ...prev,
+                                      [entry.key]: e.target.value,
+                                    }))
+                                  }
+                                  onKeyDown={(e) => {
+                                    if (e.key !== "Enter") return;
+                                    const typed = Number(rowQty[entry.key]);
+                                    addFromCatalogue(
+                                      entry.name,
+                                      Number.isFinite(typed) && typed > 0
+                                        ? typed
+                                        : entry.available,
+                                      entry.perBag,
+                                    );
+                                  }}
+                                  inputMode="numeric"
+                                  placeholder={String(entry.available)}
+                                  className="w-full rounded-md border border-gray-300 px-2 py-1.5 text-center text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                                />
+                              </td>
+                              <td className="w-20 px-2 py-2 text-right">
+                                <button
+                                  onClick={() => {
+                                    const typed = Number(rowQty[entry.key]);
+                                    addFromCatalogue(
+                                      entry.name,
+                                      Number.isFinite(typed) && typed > 0
+                                        ? typed
+                                        : entry.available,
+                                      entry.perBag,
+                                    );
+                                  }}
+                                  className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-brand-700"
+                                >
+                                  <Plus className="h-3.5 w-3.5" />
+                                  Add
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* By hand, for anything not in a file */}
+                <div className="flex flex-wrap items-end gap-3 border-t border-gray-100 bg-gray-50/60 px-4 py-3">
+                  <div className="min-w-[160px] flex-1">
                     <label
                       htmlFor="br-item"
                       className="mb-1 block text-xs font-medium text-gray-600"
                     >
-                      Item
+                      Or add by hand
                     </label>
                     <input
                       id="br-item"
-                      list="br-stock-names"
                       value={newName}
                       onChange={(e) => setNewName(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") addLine();
                       }}
-                      placeholder="e.g. Blanket"
+                      placeholder="Item not in any file"
                       className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
                     />
-                    <datalist id="br-stock-names">
-                      {stockNames.map((n) => (
-                        <option key={n} value={n} />
-                      ))}
-                    </datalist>
                   </div>
-                  <div className="w-24">
+                  <div className="w-20">
                     <label
                       htmlFor="br-qty"
                       className="mb-1 block text-xs font-medium text-gray-600"
@@ -847,12 +1165,31 @@ export default function RequestsPage() {
                       className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
                     />
                   </div>
-                  <div className="min-w-[140px] flex-1">
+                  <div className="w-28">
+                    <label
+                      htmlFor="br-perbag"
+                      className="mb-1 block text-xs font-medium text-gray-600"
+                    >
+                      Per bag
+                    </label>
+                    <input
+                      id="br-perbag"
+                      value={newPerBag}
+                      onChange={(e) => setNewPerBag(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") addLine();
+                      }}
+                      inputMode="decimal"
+                      placeholder="20000"
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                    />
+                  </div>
+                  <div className="min-w-[130px] flex-1">
                     <label
                       htmlFor="br-note"
                       className="mb-1 block text-xs font-medium text-gray-600"
                     >
-                      Note (optional)
+                      Note
                     </label>
                     <input
                       id="br-note"
@@ -867,7 +1204,7 @@ export default function RequestsPage() {
                   </div>
                   <button
                     onClick={addLine}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-700"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
                   >
                     <Plus className="h-4 w-4" />
                     Add
@@ -909,6 +1246,12 @@ export default function RequestsPage() {
                           <th className="w-24 px-2 py-3 text-center font-semibold">
                             Available
                           </th>
+                          <th className="w-28 px-2 py-3 text-right font-semibold">
+                            Per Bag
+                          </th>
+                          <th className="w-32 px-2 py-3 text-right font-semibold">
+                            Total
+                          </th>
                           <th className="w-40 px-2 py-3 text-center font-semibold">
                             Status
                           </th>
@@ -919,7 +1262,7 @@ export default function RequestsPage() {
                         {visible.length === 0 && (
                           <tr>
                             <td
-                              colSpan={7}
+                              colSpan={9}
                               className="px-4 py-10 text-center text-sm text-gray-500"
                             >
                               No items match this search.
@@ -996,6 +1339,24 @@ export default function RequestsPage() {
                               {m.inStock}
                             </td>
                             <td className="px-2 py-2.5">
+                              <input
+                                value={m.item.perBag || ""}
+                                onChange={(e) =>
+                                  updateLine(m.item.id, {
+                                    perBag: Number(e.target.value),
+                                  })
+                                }
+                                inputMode="decimal"
+                                placeholder="-"
+                                className="w-full rounded-md border border-transparent bg-transparent px-1 py-1 text-right font-medium text-gray-800 outline-none transition hover:border-gray-200 focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-100"
+                              />
+                            </td>
+                            <td className="px-2 py-2.5 text-right font-medium text-gray-900">
+                              {m.item.perBag > 0
+                                ? formatLKR(lineValue(m.item))
+                                : "-"}
+                            </td>
+                            <td className="px-2 py-2.5">
                               <div className="flex items-center justify-center gap-2">
                                 <span
                                   className={cn(
@@ -1049,7 +1410,12 @@ export default function RequestsPage() {
                           <td className="px-2 py-3 text-center">
                             {totals.outstanding}
                           </td>
-                          <td colSpan={3} />
+                          <td />
+                          <td />
+                          <td className="px-2 py-3 text-right">
+                            {formatLKR(totals.value)}
+                          </td>
+                          <td />
                         </tr>
                       </tfoot>
                     </table>
@@ -1057,8 +1423,8 @@ export default function RequestsPage() {
                 </div>
               )}
 
-              {hasBuyerInfo(active.buyer) && (
-                <div className="flex justify-end">
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {hasBuyerInfo(active.buyer) && (
                   <button
                     onClick={() => {
                       rememberBuyer(active.buyer);
@@ -1069,8 +1435,20 @@ export default function RequestsPage() {
                   >
                     Save this buyer
                   </button>
-                </div>
-              )}
+                )}
+                <button
+                  onClick={exportPdf}
+                  disabled={downloading || totals.lines === 0}
+                  className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-brand-600/25 transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {downloading ? (
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                  ) : (
+                    <FileDown className="h-5 w-5" />
+                  )}
+                  Download PDF
+                </button>
+              </div>
             </section>
           )}
         </div>

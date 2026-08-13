@@ -11,6 +11,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { parseOrderPdf } from "../src/lib/parseOrder";
 import { parseCsvOrder } from "../src/lib/parseTabular";
 import { renderManifestPdf } from "../src/lib/bagManifestPdf";
+import { toBagItems } from "../src/lib/bagManifest";
 import {
   addSource,
   availabilityFromSource,
@@ -18,6 +19,7 @@ import {
   combineAvailability,
   createRequest,
   createSource,
+  lineValue,
   removeSource,
   sourceTotal,
   markSupplied,
@@ -385,10 +387,14 @@ async function fileChecks() {
     `a priced order sheet still reads as 85 lines / 733 bags (got ${priced.items.length} / ${priced.totalQty})`,
   );
   const fromPriced = createRequest(BUYER, priced.items);
+  const blanketLine = fromPriced.items.find((i) => i.name === "Blanket")!;
   check(
-    fromPriced.items.length === 85 &&
-      !JSON.stringify(fromPriced.items).includes("perBag"),
-    "importing a priced sheet keeps names and quantities only",
+    fromPriced.items.length === 85 && blanketLine.perBag === 20000,
+    `importing a priced sheet carries the price through (Blanket at ${blanketLine.perBag})`,
+  );
+  check(
+    lineValue(blanketLine) === blanketLine.qty * 20000,
+    `the line is worth ${lineValue(blanketLine)}`,
   );
 
   // A CSV of just two columns is the other common shape.
@@ -411,8 +417,8 @@ async function fileChecks() {
     `the container file holds 85 items / 733 bags (got ${container.items.length} / ${sourceTotal(container)})`,
   );
   check(
-    !JSON.stringify(container.items).includes("perBag"),
-    "a container source keeps names and quantities only",
+    container.items.find((i) => i.name === "Blanket")?.perBag === 20000,
+    "a container source keeps the price from the file",
   );
 
   // A request the stockpile cannot fill, but the container can.
@@ -501,6 +507,61 @@ async function fileChecks() {
     "recording against a container leaves the stockpile untouched",
   );
 
+  /* --------------------------------- money --------------------------------- */
+  section("Pricing");
+
+  const quote = createRequest(BUYER, [
+    { name: "Blanket", qty: 10, perBag: 22000 },
+    { name: "Bed Sheet", qty: 4, perBag: 36000 },
+    { name: "Cotton Scarf", qty: 5 }, // no price agreed yet
+  ]);
+  const quoteTotals = requestTotals(quote);
+  check(
+    quoteTotals.value === 10 * 22000 + 4 * 36000,
+    `the order is worth ${quoteTotals.value} with the unpriced line counted as nothing`,
+  );
+  check(
+    quoteTotals.hasUnpriced,
+    "an unpriced line is flagged so the value is not mistaken for the whole order",
+  );
+  check(
+    quoteTotals.suppliedValue === 0 &&
+      quoteTotals.outstandingValue === quoteTotals.value,
+    "nothing supplied yet, so the whole value is still to invoice",
+  );
+
+  const partly = markSupplied(quote, quote.items[0].id, 4);
+  const partlyTotals = requestTotals(partly);
+  check(
+    partlyTotals.suppliedValue === 4 * 22000,
+    `supplying 4 bags is worth ${partlyTotals.suppliedValue}`,
+  );
+  check(
+    partlyTotals.outstandingValue ===
+      partlyTotals.value - partlyTotals.suppliedValue,
+    "supplied and outstanding value always add back to the order value",
+  );
+
+  check(
+    toRequestItems([{ name: "X", qty: 2, perBag: -50 }])[0].perBag === 0,
+    "a negative price clamps to nothing",
+  );
+  check(
+    toRequestItems([{ name: "X", qty: 2, perBag: "abc" }])[0].perBag === 0,
+    "a price that is not a number clamps to nothing",
+  );
+  check(
+    toRequestItems([{ name: "X", qty: 2 }])[0].perBag === 0,
+    "a missing price is simply unpriced, not an error",
+  );
+
+  // Bag manifests must stay free of money even though requests now carry it.
+  const manifestItems = toBagItems(priced.items);
+  check(
+    !JSON.stringify(manifestItems).includes("perBag"),
+    "bag manifests still carry no prices",
+  );
+
   /* -------------------------------- the CSV -------------------------------- */
   section("CSV export");
 
@@ -509,6 +570,10 @@ async function fileChecks() {
   const csv = requestsToCsv(csvDoc.requests, availabilityFromStockpile(stock));
   const rows = csv.trim().split("\n");
   check(rows[0].startsWith("Buyer,Phone,Item"), "there is a header row");
+  check(
+    rows[0].includes("Per Bag") && rows[0].includes("Total"),
+    "the CSV carries the money columns",
+  );
   check(
     rows.length === 1 + fresh.items.length,
     `one row per requested line (${rows.length - 1} for ${fresh.items.length} lines)`,

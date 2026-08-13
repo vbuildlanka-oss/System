@@ -26,6 +26,7 @@ import {
   generateManifest,
   loadManifests,
   manifestFilename,
+  orderNumberFromFilename,
   randomSeed,
   resolveManifest,
   saveManifests,
@@ -126,7 +127,10 @@ export default function BagManifestsPage() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Could not read that file.");
         const parsed = data as ParsedOrder;
-        const manifest = createManifest(parsed.title, parsed.items);
+        // The number in the file name is what gets tracked, so it wins over the
+        // heading printed inside the file.
+        const fromName = orderNumberFromFilename(file.name);
+        const manifest = createManifest(fromName || parsed.title, parsed.items);
         addManifest(manifest);
         setNotice(
           `Loaded "${manifest.orderNumber}" - ${manifest.items.length} items, ${sumQty(manifest.items)} bags. Pricing was dropped.`,

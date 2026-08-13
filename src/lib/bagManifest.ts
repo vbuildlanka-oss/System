@@ -378,6 +378,51 @@ export function createManifest(
   };
 }
 
+/**
+ * Work out an order number from an uploaded file's name.
+ *
+ * Files arrive named things like "Sri Lanka 2026 04.pdf" or
+ * "Sri Lanka Order 3 2026 - Sheet1 (1).pdf". The number in the name is the one
+ * worth tracking, so it is pulled out and used as the default order number,
+ * which keeps a downloaded manifest tied to the file it came from.
+ *
+ * Two things are deliberately ignored: a four digit year, which would otherwise
+ * be mistaken for the order number, and the noise spreadsheet exports leave
+ * behind ("Sheet1", a trailing "(1)"). The first remaining number wins, so a
+ * "rev 2" on the end does not override it. Single digits are padded to two.
+ *
+ * Returns an empty string when there is nothing usable, letting the caller fall
+ * back to the heading inside the file.
+ */
+export function orderNumberFromFilename(filename: string): string {
+  const withoutExtension = String(filename ?? "").replace(/\.[^.]+$/, "");
+
+  const cleaned = withoutExtension
+    // "(1)" that download managers add for a duplicate.
+    .replace(/\(\s*\d+\s*\)\s*$/, " ")
+    // Leftovers from spreadsheet exports.
+    .replace(
+      /\b(sheet\s*\d*|copy|final|draft|export|version|rev|revision)\b/gi,
+      " ",
+    );
+
+  const withoutYear = cleaned.replace(/\b(19|20)\d{2}\b/g, " ");
+
+  const numbers = withoutYear.match(/\d+/g);
+  const number = numbers ? numbers[0] : null;
+
+  const words = withoutYear
+    .replace(/\d+/g, " ")
+    .replace(/[_\-\u2013\u2014]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!number) return sanitizeLine(words, LIMITS.title);
+
+  const padded = number.length === 1 ? `0${number}` : number;
+  return sanitizeLine(words ? `${words} ${padded}` : padded, LIMITS.title);
+}
+
 /** `<Order Number> - <Container Number> - Bags.<ext>` */
 export function manifestFilename(
   orderNumber: string,
