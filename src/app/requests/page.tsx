@@ -244,7 +244,14 @@ export default function RequestsPage() {
           ...active,
           items: active.items.map((i) =>
             i.id === existing.id
-              ? { ...i, qty: Math.floor(i.qty + bags) }
+              ? {
+                  ...i,
+                  qty: Math.floor(i.qty + bags),
+                  // Fill in a price the line was missing. A line added by hand,
+                  // or picked before the priced file was uploaded, would
+                  // otherwise stay at nothing however often it was re-picked.
+                  perBag: i.perBag > 0 ? i.perBag : perBag,
+                }
               : i,
           ),
         });
@@ -649,6 +656,78 @@ export default function RequestsPage() {
       .slice(0, 40);
   }, [catalogue, pickSearch]);
 
+  /** Prices available from the selected source, by normalised name. */
+  const priceByKey = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const entry of catalogue) {
+      if (entry.perBag > 0) map.set(entry.key, entry.perBag);
+    }
+    return map;
+  }, [catalogue]);
+
+  const unpricedLines = useMemo(
+    () => (active?.items ?? []).filter((i) => i.perBag <= 0),
+    [active],
+  );
+
+  /** Unpriced lines the selected source can actually put a price on. */
+  const fillableCount = useMemo(
+    () =>
+      unpricedLines.filter((i) => priceByKey.has(normalizeItemKey(i.name)))
+        .length,
+    [unpricedLines, priceByKey],
+  );
+
+  /**
+   * Put the file's prices onto any line that has none.
+   *
+   * The usual reason a line is unpriced is that it was added before the priced
+   * file was uploaded - including a container added before this app kept prices
+   * at all, whose stored copy has none. Re-uploading that file and pressing this
+   * fixes the whole list at once.
+   */
+  const fillPrices = useCallback(() => {
+    if (!active) return;
+    let filled = 0;
+    const items = active.items.map((item) => {
+      if (item.perBag > 0) return item;
+      const price = priceByKey.get(normalizeItemKey(item.name));
+      if (price === undefined) return item;
+      filled += 1;
+      return { ...item, perBag: price };
+    });
+
+    if (filled === 0) {
+      setNotice(
+        `${sourceLabel} has no prices for those items. Upload the priced order file, then try again.`,
+      );
+      return;
+    }
+    save({ ...active, items });
+    setError(null);
+    setNotice(
+      `Priced ${filled} line${filled === 1 ? "" : "s"} from ${sourceLabel}.`,
+    );
+  }, [active, priceByKey, sourceLabel, save]);
+
+  /**
+   * Price any line the source can price, without being asked.
+   *
+   * Items carry a price on the sheet they came from, so a line sitting at
+   * nothing is a gap to close rather than something to nag about. Only lines
+   * with no price are touched, so a figure typed by hand is never overwritten,
+   * and once there is nothing left to fill this stops.
+   */
+  useEffect(() => {
+    if (!active || fillableCount === 0) return;
+    const items = active.items.map((item) => {
+      if (item.perBag > 0) return item;
+      const price = priceByKey.get(normalizeItemKey(item.name));
+      return price === undefined ? item : { ...item, perBag: price };
+    });
+    save({ ...active, items });
+  }, [active, fillableCount, priceByKey, save]);
+
   /** What the buyer already has on this list, by normalised name. */
   const alreadyOnList = useMemo(() => {
     const map = new Map<string, RequestItem>();
@@ -978,12 +1057,40 @@ export default function RequestsPage() {
                   />
                 </div>
 
+                {/*
+                  Prices fill themselves in from the source, so this only shows
+                  when the source genuinely has no price for those items - which
+                  means the priced file needs uploading.
+                */}
                 {totals.hasUnpriced && totals.lines > 0 && (
-                  <p className="mt-3 flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                    Some lines have no price yet, so the value above is only
-                    part of the order.
-                  </p>
+                  <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                    <span className="flex items-start gap-2">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                      {unpricedLines.length} line
+                      {unpricedLines.length === 1 ? " has" : "s have"} no price,
+                      so the value above leaves{" "}
+                      {unpricedLines.length === 1 ? "it" : "them"} out.{" "}
+                      {fillableCount > 0
+                        ? `${sourceLabel} can price ${fillableCount === unpricedLines.length ? "them" : `${fillableCount} of them`}.`
+                        : `${sourceLabel} has no price for ${unpricedLines.length === 1 ? "it" : "them"} - upload the priced order file.`}
+                    </span>
+                    {fillableCount > 0 ? (
+                      <button
+                        onClick={fillPrices}
+                        className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 transition hover:bg-amber-100"
+                      >
+                        Use prices from {sourceLabel}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => sourceRef.current?.click()}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 transition hover:bg-amber-100"
+                      >
+                        <UploadCloud className="h-3.5 w-3.5" />
+                        Add container file
+                      </button>
+                    )}
+                  </div>
                 )}
 
                 {totals.lines > 0 && (

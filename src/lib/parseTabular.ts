@@ -94,7 +94,15 @@ const LABELLED_HEADING_RE =
 
 const NAME_RE = /^(item\s*name|item|description|product)$/i;
 const QTY_RE = /^(quantity|qty|bags|no\.?\s*of\s*bags)$/i;
-const PER_BAG_RE = /^(per\s*bag|price\s*per\s*bag|unit\s*price|rate)$/i;
+/**
+ * Column headings that mean "price of one bag". Kept broad because every sheet
+ * words it differently, and a missed price column is worse than a wrong guess:
+ * the value of the whole order silently comes out as nothing.
+ *
+ * "Amount" is deliberately absent - it belongs to the line total below.
+ */
+const PER_BAG_RE =
+  /^(per\s*bag|price\s*per\s*bag|bag\s*price|price\s*\/?\s*bag|unit\s*price|unit\s*rate|rate\s*per\s*bag|rate|price|cost|cost\s*per\s*bag|value\s*per\s*bag)$/i;
 const TOTAL_RE = /^(total|amount|line\s*total)$/i;
 
 interface HeaderInfo {

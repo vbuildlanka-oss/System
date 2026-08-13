@@ -570,6 +570,44 @@ async function fileChecks() {
     "the wordmark never becomes a title",
   );
 
+  // A price column is worded differently on every sheet. Missing one is not a
+  // cosmetic problem: the whole order silently comes out worth nothing.
+  section("Price columns are recognised however they are worded");
+
+  for (const heading of [
+    "Per Bag",
+    "per bag",
+    "Price Per Bag",
+    "Bag Price",
+    "Unit Price",
+    "Unit Rate",
+    "Rate Per Bag",
+    "Rate",
+    "Price",
+    "Cost",
+    "Cost Per Bag",
+    "Value Per Bag",
+  ]) {
+    const parsedCsv = parseCsvOrder(
+      [`Item Name,Quantity,${heading},Total`, "Blanket,12,20000,240000"].join(
+        "\n",
+      ),
+      "x",
+    );
+    check(
+      parsedCsv.items[0]?.perBag === 20000,
+      `"${heading}" is read as the per-bag price (got ${parsedCsv.items[0]?.perBag})`,
+    );
+  }
+  const amountSheet = parseCsvOrder(
+    ["Item Name,Quantity,Per Bag,Amount", "Blanket,12,20000,240000"].join("\n"),
+    "x",
+  );
+  check(
+    amountSheet.items[0]?.perBag === 20000 && amountSheet.totalsMatch,
+    "\"Amount\" is treated as the line total, not the per-bag price",
+  );
+
   /* --------------------------------- money --------------------------------- */
   section("Pricing");
 
