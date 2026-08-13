@@ -12,7 +12,14 @@ import { parseOrderPdf } from "../src/lib/parseOrder";
 import { parseCsvOrder } from "../src/lib/parseTabular";
 import { renderManifestPdf } from "../src/lib/bagManifestPdf";
 import {
+  addSource,
+  availabilityFromSource,
+  availabilityFromStockpile,
+  combineAvailability,
   createRequest,
+  createSource,
+  removeSource,
+  sourceTotal,
   markSupplied,
   matchRequest,
   matchSummary,
@@ -162,7 +169,7 @@ const fresh = createRequest(BUYER, [
   { name: "Cotton Scarf", qty: 5, note: "mixed colours" }, // none -> none
   { name: "Anorak #2", qty: 6 }, // spelled differently, 6 in stock
 ]);
-const matches = matchRequest(fresh, stock);
+const matches = matchRequest(fresh, availabilityFromStockpile(stock));
 
 check(matches[0].status === "ready", "12 wanted with 20 in stock reads as ready");
 check(
@@ -187,7 +194,7 @@ check(
 
 const suppliedLine = markSupplied(fresh, fresh.items[0].id, 12);
 check(
-  matchRequest(suppliedLine, stock)[0].status === "done",
+  matchRequest(suppliedLine, availabilityFromStockpile(stock))[0].status === "done",
   "a line with nothing outstanding reads as done regardless of stock",
 );
 
@@ -356,7 +363,7 @@ async function fileChecks() {
     requestTotals(importedRequest).requested === 25,
     "the imported request asks for 25 bags",
   );
-  const importedMatch = matchRequest(importedRequest, buildStock());
+  const importedMatch = matchRequest(importedRequest, availabilityFromStockpile(buildStock()));
   check(
     importedMatch[2].item.name === "Anorak 2" &&
       importedMatch[2].inStock === 6 &&
@@ -394,12 +401,112 @@ async function fileChecks() {
     `a two-column CSV yields 2 lines / 17 bags (got ${csvList.items.length} / ${csvList.totalQty})`,
   );
 
+  /* --------------------- containers as availability sources ------------------ */
+  section("Checking against an uploaded container file");
+
+  // The container that actually holds the stock, uploaded from its order sheet.
+  const container = createSource("Sri Lanka Order 3 2026", priced.items);
+  check(
+    container.items.length === 85 && sourceTotal(container) === 733,
+    `the container file holds 85 items / 733 bags (got ${container.items.length} / ${sourceTotal(container)})`,
+  );
+  check(
+    !JSON.stringify(container.items).includes("perBag"),
+    "a container source keeps names and quantities only",
+  );
+
+  // A request the stockpile cannot fill, but the container can.
+  const bigRequest = createRequest(BUYER, [
+    { name: "Blanket", qty: 40 }, // stockpile has 20, container has 62
+    { name: "Comforter Cover", qty: 10 }, // not in the stockpile at all
+  ]);
+
+  const viaStock = matchRequest(bigRequest, availabilityFromStockpile(buildStock()));
+  check(
+    viaStock[0].status === "part" && viaStock[1].status === "none",
+    "against the stockpile alone the lines are short",
+  );
+
+  const viaContainer = matchRequest(bigRequest, availabilityFromSource(container));
+  check(
+    viaContainer[0].inStock === 62 && viaContainer[0].status === "ready",
+    `against the container, 40 Blankets are covered by its 62 (got ${viaContainer[0].inStock})`,
+  );
+  check(
+    viaContainer[1].status === "ready",
+    "and Comforter Cover is found in the container",
+  );
+
+  const combined = matchRequest(
+    bigRequest,
+    combineAvailability([
+      availabilityFromStockpile(buildStock()),
+      availabilityFromSource(container),
+    ]),
+  );
+  check(
+    combined[0].inStock === 20 + 62,
+    `everything together adds the two pools (got ${combined[0].inStock})`,
+  );
+
+  // Container names are matched the same way, so a buyer's spelling still lands.
+  const spelled = createRequest(BUYER, [{ name: "Anorak #2", qty: 3 }]);
+  check(
+    matchRequest(spelled, availabilityFromSource(container))[0].inStock === 9,
+    "a differently spelled item still matches inside a container file",
+  );
+
+  // Sources live in the document and survive a save/load.
+  let sourceDoc = addSource(emptyRequestDoc(), container);
+  check(sourceDoc.sources.length === 1, "a container is stored on the document");
+  sourceDoc = addSource(
+    sourceDoc,
+    createSource("Sri Lanka Order 3 2026", priced.items.slice(0, 10)),
+  );
+  check(
+    sourceDoc.sources.length === 1,
+    "re-uploading the same container replaces it rather than doubling it up",
+  );
+  sourceDoc = addSource(sourceDoc, createSource("Sri Lanka Order 4 2026", [
+    { name: "Blanket", qty: 15 },
+  ]));
+  check(sourceDoc.sources.length === 2, "a different container is added alongside");
+
+  const reloadedSources = parseRequestDoc(
+    JSON.parse(JSON.stringify(sourceDoc)),
+  );
+  check(
+    reloadedSources.sources.length === 2,
+    "containers survive saving and reloading",
+  );
+  check(
+    sourceTotal(reloadedSources.sources[1]) === sourceTotal(sourceDoc.sources[1]),
+    "their quantities survive too",
+  );
+  check(
+    parseRequestDoc({ sources: [{ name: "Empty", items: [] }] }).sources.length === 0,
+    "a container with no usable lines is dropped on load",
+  );
+  check(
+    removeSource(sourceDoc, sourceDoc.sources[0].id).sources.length === 1,
+    "a container can be removed",
+  );
+
+  // Supplying from a container must not pretend to move stock.
+  const beforeStock = stockpileTotals(buildStock()).bags;
+  const afterRecord = markSupplied(bigRequest, bigRequest.items[0].id, 40);
+  check(
+    afterRecord.items[0].supplied === 40 &&
+      stockpileTotals(buildStock()).bags === beforeStock,
+    "recording against a container leaves the stockpile untouched",
+  );
+
   /* -------------------------------- the CSV -------------------------------- */
   section("CSV export");
 
   stock = buildStock();
   const csvDoc = upsertRequest(emptyRequestDoc(), fresh);
-  const csv = requestsToCsv(csvDoc.requests, stock);
+  const csv = requestsToCsv(csvDoc.requests, availabilityFromStockpile(stock));
   const rows = csv.trim().split("\n");
   check(rows[0].startsWith("Buyer,Phone,Item"), "there is a header row");
   check(

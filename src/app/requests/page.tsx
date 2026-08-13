@@ -23,7 +23,13 @@ import BuyerFields from "@/components/BuyerFields";
 import { EMPTY_BUYER, rememberBuyer, hasBuyerInfo, type Buyer } from "@/lib/buyer";
 import type { ParsedOrder } from "@/lib/types";
 import {
+  addSource,
+  ALL_SOURCES_ID,
+  availabilityFromSource,
+  availabilityFromStockpile,
+  combineAvailability,
   createRequest,
+  createSource,
   loadRequests,
   markSupplied,
   matchRequest,
@@ -31,10 +37,13 @@ import {
   outstanding,
   parseRequestDoc,
   removeRequest,
+  removeSource,
   requestStatus,
   requestTotals,
   requestsToCsv,
   saveRequests,
+  sourceTotal,
+  STOCKPILE_SOURCE_ID,
   supplyFromStockpile,
   toRequestItems,
   upsertRequest,
@@ -71,6 +80,9 @@ export default function RequestsPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [importing, setImporting] = useState(false);
+  const [addingSource, setAddingSource] = useState(false);
+  /** Which pool of bags requests are checked against. */
+  const [sourceId, setSourceId] = useState<string>(STOCKPILE_SOURCE_ID);
   const [buyerRefreshKey, setBuyerRefreshKey] = useState(0);
 
   // New-line form
@@ -80,6 +92,7 @@ export default function RequestsPage() {
 
   const jsonRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const sourceRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setDoc(loadRequests());
@@ -104,6 +117,44 @@ export default function RequestsPage() {
     },
     [doc, persist],
   );
+
+  const sources = doc?.sources ?? [];
+
+  /** Bags on hand from whichever source is selected. */
+  const availability = useMemo(() => {
+    const fromStock = stockpile
+      ? availabilityFromStockpile(stockpile)
+      : new Map<string, number>();
+    if (sourceId === STOCKPILE_SOURCE_ID) return fromStock;
+    if (sourceId === ALL_SOURCES_ID) {
+      return combineAvailability([
+        fromStock,
+        ...sources.map((s) => availabilityFromSource(s)),
+      ]);
+    }
+    const source = sources.find((s) => s.id === sourceId);
+    return source ? availabilityFromSource(source) : fromStock;
+  }, [stockpile, sources, sourceId]);
+
+  /** True when the selection can actually have bags taken out of it. */
+  const sourceIsStockpile = sourceId === STOCKPILE_SOURCE_ID;
+  const sourceLabel =
+    sourceId === STOCKPILE_SOURCE_ID
+      ? "the stockpile"
+      : sourceId === ALL_SOURCES_ID
+        ? "everything"
+        : (sources.find((s) => s.id === sourceId)?.name ?? "the stockpile");
+
+  // A removed container falls back to the stockpile.
+  useEffect(() => {
+    if (
+      sourceId !== STOCKPILE_SOURCE_ID &&
+      sourceId !== ALL_SOURCES_ID &&
+      !sources.some((s) => s.id === sourceId)
+    ) {
+      setSourceId(STOCKPILE_SOURCE_ID);
+    }
+  }, [sources, sourceId]);
 
   /* ------------------------------- requests ------------------------------- */
 
@@ -281,6 +332,60 @@ export default function RequestsPage() {
     [active, stockpile, save],
   );
 
+  /**
+   * Add a container or order file as somewhere bags can come from. Most stock is
+   * not in the stockpile - it is in a container - so this is usually what a
+   * request needs checking against.
+   */
+  const addSourceFile = useCallback(
+    async (file: File) => {
+      setError(null);
+      setNotice(null);
+      setAddingSource(true);
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        const res = await fetch("/api/process", { method: "POST", body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Could not read that file.");
+
+        const parsed = data as ParsedOrder;
+        const source = createSource(
+          parsed.title || file.name.replace(/\.[^.]+$/, ""),
+          parsed.items.map((i) => ({ name: i.name, qty: i.qty })),
+        );
+        if (source.items.length === 0) {
+          throw new Error("No items with quantities were found in that file.");
+        }
+
+        const base = doc ?? loadRequests();
+        persist(addSource(base, source));
+        setSourceId(source.id);
+        setNotice(
+          `Added "${source.name}" - ${source.items.length} items, ${sourceTotal(source)} bags. Requests are now checked against it.`,
+        );
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not add that file.");
+      } finally {
+        setAddingSource(false);
+        if (sourceRef.current) sourceRef.current.value = "";
+      }
+    },
+    [doc, persist],
+  );
+
+  const dropSource = useCallback(
+    (id: string) => {
+      if (!doc) return;
+      const source = doc.sources.find((s) => s.id === id);
+      if (!source) return;
+      if (!window.confirm(`Remove "${source.name}" as a source?`)) return;
+      persist(removeSource(doc, id));
+      setNotice(`Removed "${source.name}".`);
+    },
+    [doc, persist],
+  );
+
   /* -------------------------------- exports ------------------------------- */
 
   const downloadBlob = useCallback((blob: Blob, filename: string) => {
@@ -326,19 +431,21 @@ export default function RequestsPage() {
       return;
     }
     downloadBlob(
-      new Blob([requestsToCsv(doc.requests, stockpile ?? undefined)], {
+      new Blob([requestsToCsv(doc.requests, availability)], {
         type: "text/csv;charset=utf-8",
       }),
       `Buyer requests ${new Date().toISOString().slice(0, 10)}.csv`,
     );
-    setNotice("CSV exported - one row per requested item.");
-  }, [doc, stockpile, downloadBlob]);
+    setNotice(
+      `CSV exported - one row per requested item, with availability from ${sourceLabel}.`,
+    );
+  }, [doc, availability, sourceLabel, downloadBlob]);
 
   /* -------------------------------- derived ------------------------------- */
 
   const matches = useMemo(
-    () => (active && stockpile ? matchRequest(active, stockpile) : []),
-    [active, stockpile],
+    () => (active ? matchRequest(active, availability) : []),
+    [active, availability],
   );
   const summary = useMemo(() => matchSummary(matches), [matches]);
   const totals = active ? requestTotals(active) : null;
@@ -390,6 +497,16 @@ export default function RequestsPage() {
         onChange={(e) => {
           const f = e.target.files?.[0];
           if (f) importFile(f);
+        }}
+      />
+      <input
+        ref={sourceRef}
+        type="file"
+        accept=".pdf,.csv,.xlsx,application/pdf,text/csv"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) addSourceFile(f);
         }}
       />
 
@@ -546,6 +663,70 @@ export default function RequestsPage() {
           {/* Active request */}
           {active && totals && (
             <section className="space-y-5">
+              {/* Where bags can come from */}
+              <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+                <div className="flex flex-wrap items-center gap-3">
+                  <label
+                    htmlFor="br-source"
+                    className="flex items-center gap-1.5 text-sm font-medium text-gray-700"
+                  >
+                    <Boxes className="h-4 w-4 text-brand-600" />
+                    Check against
+                  </label>
+                  <select
+                    id="br-source"
+                    value={sourceId}
+                    onChange={(e) => setSourceId(e.target.value)}
+                    className="min-w-[200px] rounded-lg border border-gray-300 bg-white px-2 py-2 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                  >
+                    <option value={STOCKPILE_SOURCE_ID}>
+                      Stockpile
+                      {stockpile
+                        ? ` (${stockpile.items.reduce((s, i) => s + itemBags(i), 0)} bags)`
+                        : ""}
+                    </option>
+                    {sources.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} ({sourceTotal(s)} bags)
+                      </option>
+                    ))}
+                    {sources.length > 0 && (
+                      <option value={ALL_SOURCES_ID}>
+                        Everything together
+                      </option>
+                    )}
+                  </select>
+
+                  <button
+                    onClick={() => sourceRef.current?.click()}
+                    disabled={addingSource}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    {addingSource ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <UploadCloud className="h-4 w-4" />
+                    )}
+                    Add container file
+                  </button>
+
+                  {!sourceIsStockpile && sourceId !== ALL_SOURCES_ID && (
+                    <button
+                      onClick={() => dropSource(sourceId)}
+                      title="Remove this container as a source"
+                      className="rounded-md p-2 text-red-500 transition hover:bg-red-50"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+                <p className="mt-2 text-xs text-gray-500">
+                  {sourceIsStockpile
+                    ? "Supplying a line takes the bags out of the stockpile."
+                    : "A container file is a record of what shipped, so supplying only records it here - the file is left alone."}
+                </p>
+              </div>
+
               <BuyerFields
                 value={active.buyer}
                 onChange={setBuyer}
@@ -584,7 +765,7 @@ export default function RequestsPage() {
                   <p className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-600">
                     <span className="flex items-center gap-1.5">
                       <Boxes className="h-4 w-4 text-brand-600" />
-                      From the stockpile right now:
+                      From {sourceLabel}:
                     </span>
                     <span className="font-medium text-emerald-700">
                       {summary.ready} ready
@@ -726,7 +907,7 @@ export default function RequestsPage() {
                             To go
                           </th>
                           <th className="w-24 px-2 py-3 text-center font-semibold">
-                            In stock
+                            Available
                           </th>
                           <th className="w-40 px-2 py-3 text-center font-semibold">
                             Status
@@ -827,9 +1008,15 @@ export default function RequestsPage() {
                                 {m.canSupply > 0 && (
                                   <button
                                     onClick={() =>
-                                      supplyFromStock(m.item.id, m.canSupply)
+                                      sourceIsStockpile
+                                        ? supplyFromStock(m.item.id, m.canSupply)
+                                        : adjustSupplied(m.item.id, m.canSupply)
                                     }
-                                    title={`Take ${m.canSupply} bag(s) out of the stockpile and record as supplied`}
+                                    title={
+                                      sourceIsStockpile
+                                        ? `Take ${m.canSupply} bag(s) out of the stockpile and record as supplied`
+                                        : `Record ${m.canSupply} bag(s) as supplied from ${sourceLabel}`
+                                    }
                                     className="inline-flex items-center gap-1 rounded-md border border-emerald-200 px-2 py-1 text-xs font-medium text-emerald-700 transition hover:bg-emerald-50"
                                   >
                                     <PackageCheck className="h-3.5 w-3.5" />

@@ -51,10 +51,34 @@ export interface BuyerRequest {
   updatedAt: string;
 }
 
+/** A line in an uploaded container or order file. */
+export interface SourceItem {
+  name: string;
+  qty: number;
+}
+
+/**
+ * Somewhere bags can come from, other than the stockpile.
+ *
+ * Most stock is not sitting in the stockpile - it is in a container that has
+ * arrived or is on the way. Uploading that order file makes it available to
+ * check requests against. Sources are reference data: they are never altered by
+ * supplying a line, because the file is a record of what shipped.
+ */
+export interface StockSource {
+  id: string;
+  /** Usually the order number from the file, e.g. "Sri Lanka Order 3 2026". */
+  name: string;
+  items: SourceItem[];
+  addedAt: string;
+}
+
 export interface RequestDoc {
   app: "balebook-buyer-requests";
   version: number;
   requests: BuyerRequest[];
+  /** Uploaded container/order files kept for availability checks. */
+  sources: StockSource[];
   updatedAt: string;
 }
 
@@ -63,6 +87,7 @@ export function emptyRequestDoc(): RequestDoc {
     app: "balebook-buyer-requests",
     version: REQUEST_VERSION,
     requests: [],
+    sources: [],
     updatedAt: new Date().toISOString(),
   };
 }
@@ -123,10 +148,46 @@ export function requestStatus(request: BuyerRequest): RequestStatus {
 
 export type LineAvailability = "done" | "ready" | "part" | "none";
 
+/**
+ * Bags on hand, keyed by normalised item name.
+ *
+ * Using the same key the stockpile uses means a buyer writing "Anorak #2" is
+ * matched against "Anorak 2" wherever it came from.
+ */
+export type Availability = Map<string, number>;
+
+export function availabilityFromStockpile(stockpile: Stockpile): Availability {
+  const map: Availability = new Map();
+  for (const item of stockpile.items) {
+    map.set(item.key, (map.get(item.key) ?? 0) + itemBags(item));
+  }
+  return map;
+}
+
+export function availabilityFromSource(source: StockSource): Availability {
+  const map: Availability = new Map();
+  for (const item of source.items) {
+    const key = normalizeItemKey(item.name);
+    map.set(key, (map.get(key) ?? 0) + item.qty);
+  }
+  return map;
+}
+
+/** Add several sources together, e.g. the stockpile plus every container. */
+export function combineAvailability(parts: Availability[]): Availability {
+  const map: Availability = new Map();
+  for (const part of parts) {
+    part.forEach((bags, key) => {
+      map.set(key, (map.get(key) ?? 0) + bags);
+    });
+  }
+  return map;
+}
+
 export interface LineMatch {
   item: RequestItem;
   outstanding: number;
-  /** Bags of this item currently in the stockpile. */
+  /** Bags of this item available from whichever source was supplied. */
   inStock: number;
   /** How many of the outstanding bags could be supplied right now. */
   canSupply: number;
@@ -134,25 +195,19 @@ export interface LineMatch {
 }
 
 /**
- * Compare a request against the stockpile.
+ * Compare a request against whatever is available.
  *
- * Note the stockpile is consulted per line independently. If a buyer asks for
- * the same item on two lines, both will report the same stock - the figures are
- * "what is on the shelf", not a reservation.
+ * Each line is looked up independently. If a buyer asks for the same item on
+ * two lines, both report the same figure - this is "what is on hand", not a
+ * reservation.
  */
 export function matchRequest(
   request: BuyerRequest,
-  stockpile: Stockpile,
+  available: Availability,
 ): LineMatch[] {
-  const stock = new Map<string, number>();
-  for (const item of stockpile.items) {
-    const bags = itemBags(item);
-    stock.set(item.key, (stock.get(item.key) ?? 0) + bags);
-  }
-
   return request.items.map((item) => {
     const out = outstanding(item);
-    const inStock = stock.get(normalizeItemKey(item.name)) ?? 0;
+    const inStock = available.get(normalizeItemKey(item.name)) ?? 0;
     const canSupply = Math.min(out, inStock);
     let status: LineAvailability;
     if (out === 0) status = "done";
@@ -161,6 +216,58 @@ export function matchRequest(
     else status = "none";
     return { item, outstanding: out, inStock, canSupply, status };
   });
+}
+
+/* -------------------------------- sources -------------------------------- */
+
+export function toSourceItems(
+  source: Array<{ name?: unknown; qty?: unknown }>,
+): SourceItem[] {
+  const out: SourceItem[] = [];
+  for (const raw of source) {
+    const row = (raw ?? {}) as Record<string, unknown>;
+    const name = sanitizeLine(row.name, LIMITS.itemName);
+    if (!name) continue;
+    const qty = Math.max(1, Math.floor(clampNumber(row.qty, LIMITS.qty)));
+    out.push({ name, qty });
+  }
+  return out;
+}
+
+export function createSource(
+  name: string,
+  items: Array<{ name?: unknown; qty?: unknown }>,
+): StockSource {
+  return {
+    id: uid("src"),
+    name: sanitizeLine(name, LIMITS.title) || "Container",
+    items: toSourceItems(items),
+    addedAt: new Date().toISOString(),
+  };
+}
+
+export function sourceTotal(source: StockSource): number {
+  return source.items.reduce((s, i) => s + i.qty, 0);
+}
+
+export function addSource(doc: RequestDoc, source: StockSource): RequestDoc {
+  // Re-uploading the same container replaces it rather than doubling it up.
+  const others = doc.sources.filter(
+    (s) => s.name.toLowerCase() !== source.name.toLowerCase(),
+  );
+  return {
+    ...doc,
+    sources: [source, ...others].slice(0, 50),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function removeSource(doc: RequestDoc, id: string): RequestDoc {
+  return {
+    ...doc,
+    sources: doc.sources.filter((s) => s.id !== id),
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 export interface MatchSummary {
@@ -195,6 +302,10 @@ export function matchSummary(matches: LineMatch[]): MatchSummary {
 function touch(doc: RequestDoc, requests: BuyerRequest[]): RequestDoc {
   return { ...doc, requests, updatedAt: new Date().toISOString() };
 }
+
+/** Present for readability in exports and notices. */
+export const STOCKPILE_SOURCE_ID = "stockpile";
+export const ALL_SOURCES_ID = "all";
 
 export function createRequest(
   buyer: Buyer,
@@ -361,10 +472,25 @@ export function parseRequestDoc(input: unknown): RequestDoc {
       };
     });
 
+  const rawSources = Array.isArray(raw.sources) ? raw.sources : [];
+  const sources: StockSource[] = rawSources
+    .slice(0, 50)
+    .map((entry, i) => {
+      const s = (entry ?? {}) as Record<string, unknown>;
+      return {
+        id: String(s.id ?? uid("src")),
+        name: sanitizeLine(s.name, LIMITS.title) || `Container ${i + 1}`,
+        items: toSourceItems(Array.isArray(s.items) ? s.items : []),
+        addedAt: String(s.addedAt ?? new Date().toISOString()),
+      };
+    })
+    .filter((s) => s.items.length > 0);
+
   return {
     app: "balebook-buyer-requests",
     version: Number(raw.version) || REQUEST_VERSION,
     requests,
+    sources,
     updatedAt: String(raw.updatedAt ?? new Date().toISOString()),
   };
 }
@@ -394,7 +520,7 @@ function csvCell(value: string | number): string {
 /** One row per requested line, across every buyer. */
 export function requestsToCsv(
   requests: BuyerRequest[],
-  stockpile?: Stockpile,
+  available?: Availability,
 ): string {
   const header = [
     "Buyer",
@@ -403,13 +529,13 @@ export function requestsToCsv(
     "Requested",
     "Supplied",
     "Outstanding",
-    "In Stockpile",
+    "Available",
     "Note",
   ];
   const lines = [header.map(csvCell).join(",")];
 
   for (const request of requests) {
-    const matches = stockpile ? matchRequest(request, stockpile) : null;
+    const matches = available ? matchRequest(request, available) : null;
     request.items.forEach((item, i) => {
       lines.push(
         [
