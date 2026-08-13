@@ -16,6 +16,7 @@ import {
   checkPhone,
   forgetBuyer,
   hasBuyerInfo,
+  isRefUsed,
   loadBuyers,
   whatsappLink,
   type Buyer,
@@ -28,6 +29,12 @@ interface Props {
   /** Optional editable document reference (shown on the PDF). */
   refNo?: string;
   onRefChange?: (ref: string) => void;
+  /**
+   * The reference this document was generated with. Editing away from it and
+   * onto a reference already used elsewhere triggers a duplicate warning; the
+   * document's own reference never warns about itself.
+   */
+  knownRef?: string;
   /** Bump this to re-read the saved buyer list. */
   refreshKey?: number;
   /** Compact mode hides the heading and reference field (used in dialogs). */
@@ -41,6 +48,7 @@ export default function BuyerFields({
   onChange,
   refNo,
   onRefChange,
+  knownRef,
   refreshKey = 0,
   compact = false,
   heading = "Buyer details",
@@ -56,6 +64,19 @@ export default function BuyerFields({
 
   const phone = checkPhone(value.phone);
   const wa = whatsappLink(value.phone);
+
+  // Warn only when the reference has been edited to something already used for
+  // a different document. A document never warns about its own reference, and
+  // re-reading runs whenever refreshKey changes (e.g. after a download).
+  const trimmedRef = (refNo ?? "").trim();
+  const refDuplicate = useMemo(() => {
+    if (trimmedRef === "") return false;
+    if (knownRef && trimmedRef.toUpperCase() === knownRef.trim().toUpperCase()) {
+      return false;
+    }
+    return isRefUsed(trimmedRef);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trimmedRef, knownRef, refreshKey]);
 
   const suggestions = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -244,13 +265,27 @@ export default function BuyerFields({
             <input
               value={refNo ?? ""}
               onChange={(e) => onRefChange(e.target.value)}
-              placeholder="BB-260809-001"
-              className="w-full rounded-lg border border-gray-300 py-2 pl-9 pr-3 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+              placeholder="BB-3F7K-260809-001"
+              className={cn(
+                "w-full rounded-lg border py-2 pl-9 pr-3 text-sm outline-none transition focus:ring-2",
+                refDuplicate
+                  ? "border-amber-300 bg-amber-50 focus:border-amber-400 focus:ring-amber-100"
+                  : "border-gray-300 focus:border-brand-500 focus:ring-brand-100",
+              )}
             />
           </div>
-          <p className="mt-1 text-xs text-gray-500">
-            Numbered automatically. Edit it if you use your own numbering.
-          </p>
+          {refDuplicate ? (
+            <p className="mt-1 flex items-start gap-1.5 text-xs text-amber-700">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              This reference has already been used on another document. Change it
+              to keep every document unique.
+            </p>
+          ) : (
+            <p className="mt-1 text-xs text-gray-500">
+              Unique per device, numbered automatically. Edit it if you use your
+              own numbering.
+            </p>
+          )}
         </div>
       )}
     </div>

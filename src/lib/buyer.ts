@@ -7,6 +7,7 @@
  */
 
 import { readLocal, writeLocal } from "./storage";
+import { getDeviceId } from "./device";
 
 export interface Buyer {
   name: string;
@@ -211,13 +212,17 @@ function todayStamp(d = new Date()): string {
 }
 
 /**
- * Next document reference, e.g. "BB-260809-003".
- * Counts up per day and is stored locally. It stays editable in the UI so you
+ * Next document reference, e.g. "BB-3F7K-260809-003".
+ *
+ * Made of a fixed per-device tag, the date, and a counter that climbs through
+ * the day and resets each morning. The device tag is what keeps two browsers
+ * from both issuing "001" for the same day. It stays editable in the UI so you
  * always have the final say on what appears on the document.
  */
 export function nextRefNo(): string {
   const stamp = todayStamp();
-  if (typeof window === "undefined") return `BB-${stamp}-001`;
+  const device = getDeviceId();
+  if (typeof window === "undefined") return `BB-${device}-${stamp}-001`;
   let n = 1;
   try {
     const raw = readLocal(REF_KEY, REF_KEY_LEGACY);
@@ -231,7 +236,47 @@ export function nextRefNo(): string {
   } catch {
     /* ignore */
   }
-  return `BB-${stamp}-${String(n).padStart(3, "0")}`;
+  return `BB-${device}-${stamp}-${String(n).padStart(3, "0")}`;
+}
+
+/* --------------------------- used-reference ledger ------------------------- */
+/**
+ * Auto-generated references cannot collide, but the field stays editable, so a
+ * number could be typed by hand that clashes with one already issued. Every
+ * reference that reaches a downloaded document is recorded here so the UI can
+ * warn if that ever happens. Comparison is case-insensitive.
+ */
+
+const USED_REFS_KEY = "balebook.usedRefs.v1";
+const MAX_USED_REFS = 1000;
+
+export function loadUsedRefs(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = readLocal(USED_REFS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map((r) => String(r)) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function isRefUsed(ref: string): boolean {
+  const value = ref.trim().toUpperCase();
+  if (value === "") return false;
+  return loadUsedRefs().some((r) => r.toUpperCase() === value);
+}
+
+/** Record a reference as issued. Called when a document is downloaded. */
+export function recordRef(ref: string): void {
+  const value = ref.trim();
+  if (value === "") return;
+  const existing = loadUsedRefs().filter(
+    (r) => r.toUpperCase() !== value.toUpperCase(),
+  );
+  const next = [value, ...existing].slice(0, MAX_USED_REFS);
+  writeLocal(USED_REFS_KEY, JSON.stringify(next));
 }
 
 

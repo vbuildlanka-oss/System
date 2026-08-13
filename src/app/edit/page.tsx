@@ -36,6 +36,7 @@ import {
   EMPTY_BUYER,
   hasBuyerInfo,
   nextRefNo,
+  recordRef,
   rememberBuyer,
   type Buyer,
 } from "@/lib/buyer";
@@ -130,6 +131,9 @@ export default function EditPage() {
   // Sheet-level buyer, printed on the updated sheet PDF.
   const [buyer, setBuyer] = useState<Buyer>(EMPTY_BUYER);
   const [refNo, setRefNo] = useState("");
+  // The reference attached to this sheet, so its own number never trips the
+  // "already used" warning.
+  const [generatedRef, setGeneratedRef] = useState("");
   const [buyerRefreshKey, setBuyerRefreshKey] = useState(0);
   /** "" = every buyer, otherwise a buyerIdentityKey. */
   const [receiptBuyerKey, setReceiptBuyerKey] = useState("");
@@ -153,6 +157,7 @@ export default function EditPage() {
           setSoldLog(normalizeSoldLog(saved.soldLog));
           setBuyer(normalizeBuyer(saved.buyer));
           setRefNo(String(saved.refNo ?? ""));
+          setGeneratedRef(String(saved.refNo ?? ""));
           setRestored(true);
         }
       }
@@ -256,7 +261,11 @@ export default function EditPage() {
       setRestored(false);
       // A freshly loaded sheet is a new document: clear the buyer, new reference.
       setBuyer(EMPTY_BUYER);
-      setRefNo(nextRefNo());
+      {
+        const ref = nextRefNo();
+        setRefNo(ref);
+        setGeneratedRef(ref);
+      }
       setReceiptBuyerKey("");
       setNotice(
         `Loaded ${parsed.items.length} items (${parsed.totalQty} bags)` +
@@ -296,6 +305,7 @@ export default function EditPage() {
       setSoldLog(normalizeSoldLog(data.soldLog));
       setBuyer(normalizeBuyer(data.buyer));
       setRefNo(String(data.refNo ?? ""));
+      setGeneratedRef(String(data.refNo ?? ""));
       setReceiptBuyerKey("");
       setPast([]);
       setFuture([]);
@@ -573,10 +583,9 @@ export default function EditPage() {
         a.remove();
         URL.revokeObjectURL(url);
 
-        if (hasBuyerInfo(docBuyer)) {
-          rememberBuyer(docBuyer);
-          setBuyerRefreshKey((k) => k + 1);
-        }
+        if (hasBuyerInfo(docBuyer)) rememberBuyer(docBuyer);
+        recordRef(refNo);
+        setBuyerRefreshKey((k) => k + 1);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Download failed.");
       } finally {
@@ -682,6 +691,7 @@ export default function EditPage() {
     setTitle("");
     setRows([]);
     setSoldLog([]);
+    setGeneratedRef("");
     setPast([]);
     setFuture([]);
     setSearch("");
@@ -858,6 +868,7 @@ export default function EditPage() {
             onChange={setBuyer}
             refNo={refNo}
             onRefChange={setRefNo}
+            knownRef={generatedRef}
             refreshKey={buyerRefreshKey}
             description="Printed on the sheet, and used as the default when you record a sale."
           />

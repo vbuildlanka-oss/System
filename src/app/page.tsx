@@ -17,6 +17,7 @@ import {
   EMPTY_BUYER,
   hasBuyerInfo,
   nextRefNo,
+  recordRef,
   rememberBuyer,
   type Buyer,
 } from "@/lib/buyer";
@@ -31,6 +32,9 @@ export default function Home() {
   const [markup, setMarkup] = useState<number>(DEFAULT_MARKUP);
   const [buyer, setBuyer] = useState<Buyer>(EMPTY_BUYER);
   const [refNo, setRefNo] = useState("");
+  // The reference this sheet was generated with, so its own number never
+  // trips the "already used" warning.
+  const [generatedRef, setGeneratedRef] = useState("");
   const [buyerRefreshKey, setBuyerRefreshKey] = useState(0);
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -61,7 +65,9 @@ export default function Home() {
       }
       setParsed(data as ParsedOrder);
       // Each newly loaded sheet gets its own document reference.
-      setRefNo(nextRefNo());
+      const ref = nextRefNo();
+      setRefNo(ref);
+      setGeneratedRef(ref);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
       setFile(null);
@@ -110,11 +116,11 @@ export default function Home() {
       a.remove();
       URL.revokeObjectURL(url);
 
-      // Remember the buyer so it can be picked from a list next time.
-      if (hasBuyerInfo(buyer)) {
-        rememberBuyer(buyer);
-        setBuyerRefreshKey((k) => k + 1);
-      }
+      // Remember the buyer so it can be picked from a list next time, and
+      // record the reference so a later document can warn if it is reused.
+      if (hasBuyerInfo(buyer)) rememberBuyer(buyer);
+      recordRef(refNo);
+      setBuyerRefreshKey((k) => k + 1);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Download failed.");
     } finally {
@@ -129,6 +135,7 @@ export default function Home() {
     setMarkup(DEFAULT_MARKUP);
     setBuyer(EMPTY_BUYER);
     setRefNo("");
+    setGeneratedRef("");
     if (inputRef.current) inputRef.current.value = "";
   }, []);
 
@@ -301,6 +308,7 @@ export default function Home() {
             onChange={setBuyer}
             refNo={refNo}
             onRefChange={setRefNo}
+            knownRef={generatedRef}
             refreshKey={buyerRefreshKey}
             description="Printed at the top of the price list."
           />

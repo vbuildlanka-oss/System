@@ -3,6 +3,8 @@
 Order sheets, bag manifests, sales and stockpile tracking for a clothing import
 business. Everything runs on files, so there is no database to maintain.
 
+There is no login: the app is single-user and all state lives in the browser.
+
 Built with Next.js, TypeScript and Tailwind CSS.
 
 ---
@@ -60,36 +62,43 @@ Both pages have a buyer section (name + phone), printed on the PDF as a
 - Buyer input is sanitised server-side (control characters stripped, length
   capped) so a bad paste can never break the PDF.
 
-## 3. Order Bag Lists (`/bag-lists`)
+## 3. Order Bag Manifests (`/bag-manifests`)
 
-A manifest you can hand out: item names and bag counts only, with no pricing
-anywhere.
+A manifest for shippers and customs: order title, container number, item names
+and bag counts. No pricing anywhere.
 
 - **Sources**: upload a **PDF, CSV or XLSX** order, or pull the sheet currently
   open in the Order Editor.
 - **Pricing is dropped at import**, not hidden at render, so no code path can
   put a price on a manifest.
+- **Container number** is validated ISO 6346 style — four letters then seven
+  digits — and stored uppercase, with spaces and dashes stripped as you type. The
+  check digit is verified and a mismatch is *flagged but not blocked*, since a
+  container exists with whatever number is stamped on it. A valid container
+  number is required before either export is enabled.
 - **Set a target total** and the per-item quantities are reduced at random until
   they sum to *exactly* that figure, with **every item keeping at least one
   bag**. Each removed bag is drawn from a line with probability proportional to
   how many it can spare, so a line of 62 gives up more than a line of 3 and the
   shape of the order survives.
-- **Reshuffle** produces a different split totalling the same number. The split
-  is derived from a stored seed rather than saved, so a list always renders the
-  same numbers until you reshuffle.
-- **Several orders at once**, each with its own target (e.g. Order 3 → 520,
-  Order 4 → 515), picked from the sidebar.
+- **The generated distribution is saved**, so re-downloading reproduces the same
+  document. **Re-randomise** is a separate, confirmed action that replaces it.
+- **Several orders at once**, each with its own container number and target
+  (e.g. Order 3 → 520, Order 4 → 515), picked from the sidebar.
 - **Validation**: the target must be a whole number, at least the item count
   (one bag each) and no more than the order's current total, since quantities
   are only ever reduced.
-- **Exports** `.xlsx` and `.pdf` with identical data. In the spreadsheet the
-  Total is a **live `=SUM(B3:Bn)` formula**, not a hardcoded number:
+- **Exports** `.xlsx` and `.pdf` with identical data, named
+  `<Order Title> - <Container Number> - Bags.<ext>`. In the spreadsheet the Total
+  is a **live `=SUM(B4:Bn)` formula**, not a hardcoded number, and in the PDF the
+  heading and table header repeat on every page:
 
   ```
   row 1        Sri Lanka Order 3 2026
-  row 2        Item Name | Quantity
-  row 3..87    the items
-  row 88       Total     | =SUM(B3:B87)
+  row 2        Container Number: GAOU7441740
+  row 3        Item Name | Quantity
+  row 4..88    the items
+  row 89       Total     | =SUM(B4:B88)
   ```
 
 ## 4. Stockpile (`/stockpile`)
@@ -168,7 +177,7 @@ npx tsx scripts/verify-edit.ts       # editor: edits, sales, overrides, exports
 npx tsx scripts/verify-buyer.ts      # buyers: phone formats, sanitising, PDF block
 npx tsx scripts/verify-stockpile.ts  # stockpile: batches, FIFO, ageing, files
 npx tsx scripts/verify-api.ts        # API routes: every success and failure path
-npx tsx scripts/verify-bag-list.ts  # bag lists: reduction, SUM formula, xlsx/pdf parity
+npx tsx scripts/verify-bag-manifest.ts  # manifests: containers, reduction, exports
 ```
 
 ---
@@ -184,11 +193,12 @@ npx tsx scripts/verify-bag-list.ts  # bag lists: reduction, SUM formula, xlsx/pd
 | Buyer input UI | `src/components/BuyerFields.tsx` |
 | Stockpile model + FIFO + ageing | `src/lib/stockpile.ts` |
 | Stockpile UI | `src/app/stockpile/page.tsx` |
-| Bag list model + reduction | `src/lib/bagList.ts` |
-| Bag list PDF / spreadsheet | `src/lib/bagListPdf.tsx`, `src/lib/bagListXlsx.ts` |
+| Manifest model + reduction | `src/lib/bagManifest.ts` |
+| Container number validation | `src/lib/container.ts` |
+| Manifest PDF / spreadsheet | `src/lib/bagManifestPdf.tsx`, `src/lib/bagManifestXlsx.ts` |
 | CSV + XLSX order parsing | `src/lib/parseTabular.ts` |
-| Bag list download endpoint | `src/app/api/bag-list/route.ts` |
-| Bag list UI | `src/app/bag-lists/page.tsx` |
+| Manifest download endpoint | `src/app/api/bag-manifest/route.ts` |
+| Manifest UI | `src/app/bag-manifests/page.tsx` |
 | Render any PDF | `src/lib/buyerPdf.tsx` (`renderSheetPdf`) |
 | Upload / parse endpoint | `src/app/api/process/route.ts` |
 | Price list download endpoint | `src/app/api/generate/route.ts` |
