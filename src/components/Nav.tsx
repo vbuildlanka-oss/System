@@ -6,6 +6,7 @@ import {
   Boxes,
   ClipboardList,
   FileSpreadsheet,
+  ListChecks,
   PencilRuler,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
@@ -15,6 +16,7 @@ const links = [
   { href: "/edit", label: "Order Editor", icon: PencilRuler },
   { href: "/bag-manifests", label: "Bag Manifests", icon: ClipboardList },
   { href: "/stockpile", label: "Stockpile", icon: Boxes },
+  { href: "/requests", label: "Requests", icon: ListChecks },
 ];
 
 export default function Nav() {
