@@ -280,8 +280,10 @@ export async function parseOrderPdf(buffer: Buffer): Promise<ParsedOrder> {
       continue;
     }
 
-    // First non-matching, non-empty line is treated as the sheet title.
-    if (!title) {
+    // First line that is neither a row nor page furniture is the sheet title.
+    // Without this guard a document produced by this app hands back its own
+    // wordmark, since that is the first line on the page.
+    if (!title && !isNoiseLine(line)) {
       title = line;
     }
   }

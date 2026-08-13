@@ -323,8 +323,14 @@ export default function RequestsPage() {
         if (!res.ok) throw new Error(data.error || "Could not read that file.");
 
         const parsed = data as ParsedOrder;
+        // The per-bag price comes across too when the file had one, so the
+        // request is worth something the moment it is imported.
         const lines = toRequestItems(
-          parsed.items.map((i) => ({ name: i.name, qty: i.qty })),
+          parsed.items.map((i) => ({
+            name: i.name,
+            qty: i.qty,
+            perBag: i.perBag,
+          })),
         );
         if (lines.length === 0) {
           throw new Error("No items with quantities were found in that file.");
@@ -346,8 +352,10 @@ export default function RequestsPage() {
         setActiveId(merged.id);
 
         const bags = lines.reduce((s, l) => s + l.qty, 0);
+        const worth = lines.reduce((s, l) => s + l.qty * l.perBag, 0);
         setNotice(
-          `Imported ${lines.length} item(s), ${bags} bags from ${file.name}.` +
+          `Imported ${lines.length} item(s), ${bags} bags from ${file.name}` +
+            (worth > 0 ? ` - worth ${formatLKR(worth)}.` : ".") +
             (parsed.totalsMatch
               ? ""
               : " The total on the file did not match the lines, so please check the quantities below."),
@@ -414,9 +422,17 @@ export default function RequestsPage() {
         if (!res.ok) throw new Error(data.error || "Could not read that file.");
 
         const parsed = data as ParsedOrder;
+        // Named after the file you picked, so it is recognisable in the list.
+        // The heading inside the file is not used: it is often a document title
+        // rather than the container, and tells you nothing about which file
+        // this was.
         const source = createSource(
-          parsed.title || file.name.replace(/\.[^.]+$/, ""),
-          parsed.items.map((i) => ({ name: i.name, qty: i.qty })),
+          file.name.replace(/\.[^.]+$/, ""),
+          parsed.items.map((i) => ({
+            name: i.name,
+            qty: i.qty,
+            perBag: i.perBag,
+          })),
         );
         if (source.items.length === 0) {
           throw new Error("No items with quantities were found in that file.");
@@ -425,8 +441,12 @@ export default function RequestsPage() {
         const base = doc ?? loadRequests();
         persist(addSource(base, source));
         setSourceId(source.id);
+        const priced = source.items.filter((i) => i.perBag > 0).length;
         setNotice(
-          `Added "${source.name}" - ${source.items.length} items, ${sourceTotal(source)} bags. Requests are now checked against it.`,
+          `Added "${source.name}" - ${source.items.length} items, ${sourceTotal(source)} bags` +
+            (priced > 0
+              ? `, ${priced} with prices. Requests are now checked against it.`
+              : ". Requests are now checked against it."),
         );
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not add that file.");

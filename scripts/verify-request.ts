@@ -507,6 +507,69 @@ async function fileChecks() {
     "recording against a container leaves the stockpile untouched",
   );
 
+  /* ------------------- prices come out of the file itself ------------------- */
+  section("Prices are read from the file, not typed");
+
+  // The whole point: import a priced sheet and the request is already worth
+  // something, with no price typed by hand.
+  const pricedSource = createSource(
+    "Sri Lanka Order 3 2026 - Sheet1 (1)",
+    priced.items.map((i) => ({ name: i.name, qty: i.qty, perBag: i.perBag })),
+  );
+  check(
+    pricedSource.items.every((i) => i.perBag > 0),
+    `every one of the ${pricedSource.items.length} lines came in with a price`,
+  );
+  const srcBlanket = pricedSource.items.find((i) => i.name === "Blanket")!;
+  check(
+    srcBlanket.perBag === 20000 && srcBlanket.qty === 62,
+    `Blanket read as 62 bags at ${srcBlanket.perBag}`,
+  );
+  check(
+    pricedSource.items.reduce((s, i) => s + i.qty * i.perBag, 0) === 17_878_000,
+    "the container is worth Rs17,878,000, matching the sheet",
+  );
+
+  const autoPriced = createRequest(
+    BUYER,
+    toRequestItems(
+      priced.items.map((i) => ({ name: i.name, qty: i.qty, perBag: i.perBag })),
+    ),
+  );
+  const autoTotals = requestTotals(autoPriced);
+  check(
+    autoTotals.value === 17_878_000,
+    `an imported request is worth ${autoTotals.value} straight away`,
+  );
+  check(
+    !autoTotals.hasUnpriced,
+    "no line needs a price typing in after a priced import",
+  );
+
+  // A file with no prices stays unpriced rather than inventing figures.
+  check(
+    fromPdf.items.every((i) => i.perBag === 0),
+    "a list with no prices imports unpriced instead of guessing",
+  );
+
+  // A document this app produced must not hand back its own wordmark as the
+  // heading, which is what made an uploaded container show up as "BaleBook".
+  const ownDocument = await renderManifestPdf({
+    orderNumber: "Sri Lanka 04",
+    containerNumber: "GAOU7441740",
+    items: [{ name: "Blanket", qty: 12 }],
+    total: 12,
+  });
+  const ownTitle = (await parseOrderPdf(ownDocument)).title;
+  check(
+    ownTitle === "Sri Lanka 04",
+    `a BaleBook document reports its order number, not its wordmark (got "${ownTitle}")`,
+  );
+  check(
+    !/balebook/i.test(ownTitle),
+    "the wordmark never becomes a title",
+  );
+
   /* --------------------------------- money --------------------------------- */
   section("Pricing");
 
