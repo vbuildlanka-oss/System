@@ -13,7 +13,7 @@ import { cn } from "@/lib/cn";
 const links = [
   { href: "/", label: "Price List", icon: FileSpreadsheet },
   { href: "/edit", label: "Order Editor", icon: PencilRuler },
-  { href: "/bag-lists", label: "Bag Lists", icon: ClipboardList },
+  { href: "/bag-manifests", label: "Bag Manifests", icon: ClipboardList },
   { href: "/stockpile", label: "Stockpile", icon: Boxes },
 ];
 

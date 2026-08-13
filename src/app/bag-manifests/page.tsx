@@ -16,19 +16,24 @@ import {
   Target,
   PencilRuler,
   Search,
+  Container as ContainerIcon,
 } from "lucide-react";
 import type { ParsedOrder, EditableRow } from "@/lib/types";
 import {
   checkTarget,
-  createBagList,
-  loadBagLists,
+  clearGenerated,
+  createManifest,
+  generateManifest,
+  loadManifests,
+  manifestFilename,
   randomSeed,
-  resolveBagList,
-  saveBagLists,
+  resolveManifest,
+  saveManifests,
   sumQty,
-  type BagList,
-  type BagListDoc,
-} from "@/lib/bagList";
+  type BagManifest,
+  type BagManifestDoc,
+} from "@/lib/bagManifest";
+import { checkContainerNumber } from "@/lib/container";
 import { readLocal } from "@/lib/storage";
 import { cn } from "@/lib/cn";
 
@@ -36,8 +41,8 @@ import { cn } from "@/lib/cn";
 const EDITOR_KEY = "balebook.orderEditor.v1";
 const EDITOR_KEY_LEGACY = "vbuild.orderEditor.v1";
 
-export default function BagListsPage() {
-  const [doc, setDoc] = useState<BagListDoc | null>(null);
+export default function BagManifestsPage() {
+  const [doc, setDoc] = useState<BagManifestDoc | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [targetDraft, setTargetDraft] = useState("");
   const [loading, setLoading] = useState(false);
@@ -49,46 +54,60 @@ export default function BagListsPage() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    setDoc(loadBagLists());
+    setDoc(loadManifests());
   }, []);
 
-  const lists = doc?.lists ?? [];
+  const manifests = doc?.manifests ?? [];
   const active = useMemo(
-    () => lists.find((l) => l.id === activeId) ?? lists[0] ?? null,
-    [lists, activeId],
+    () => manifests.find((m) => m.id === activeId) ?? manifests[0] ?? null,
+    [manifests, activeId],
   );
 
-  // Keep the target box in step with whichever list is selected.
+  // Keep the target box in step with whichever manifest is selected.
   useEffect(() => {
-    setTargetDraft(active?.target !== null && active ? String(active.target) : "");
+    setTargetDraft(active && active.target !== null ? String(active.target) : "");
   }, [active?.id, active?.target, active]);
 
-  const persist = useCallback((next: BagListDoc) => {
+  const persist = useCallback((next: BagManifestDoc) => {
     setDoc(next);
-    saveBagLists(next);
+    saveManifests(next);
   }, []);
 
-  const updateList = useCallback(
-    (id: string, patch: Partial<BagList>) => {
+  const updateManifest = useCallback(
+    (id: string, patch: Partial<BagManifest>) => {
       if (!doc) return;
       persist({
         ...doc,
-        lists: doc.lists.map((l) => (l.id === id ? { ...l, ...patch } : l)),
+        manifests: doc.manifests.map((m) =>
+          m.id === id ? { ...m, ...patch } : m,
+        ),
         updatedAt: new Date().toISOString(),
       });
     },
     [doc, persist],
   );
 
-  const addList = useCallback(
-    (list: BagList) => {
-      const base = doc ?? loadBagLists();
+  const replaceManifest = useCallback(
+    (next: BagManifest) => {
+      if (!doc) return;
       persist({
-        ...base,
-        lists: [list, ...base.lists],
+        ...doc,
+        manifests: doc.manifests.map((m) => (m.id === next.id ? next : m)),
         updatedAt: new Date().toISOString(),
       });
-      setActiveId(list.id);
+    },
+    [doc, persist],
+  );
+
+  const addManifest = useCallback(
+    (manifest: BagManifest) => {
+      const base = doc ?? loadManifests();
+      persist({
+        ...base,
+        manifests: [manifest, ...base.manifests],
+        updatedAt: new Date().toISOString(),
+      });
+      setActiveId(manifest.id);
     },
     [doc, persist],
   );
@@ -107,10 +126,10 @@ export default function BagListsPage() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Could not read that file.");
         const parsed = data as ParsedOrder;
-        const list = createBagList(parsed.title, parsed.items);
-        addList(list);
+        const manifest = createManifest(parsed.title, parsed.items);
+        addManifest(manifest);
         setNotice(
-          `Loaded "${list.title}" - ${list.items.length} items, ${sumQty(list.items)} bags. Pricing was dropped.`,
+          `Loaded "${manifest.title}" - ${manifest.items.length} items, ${sumQty(manifest.items)} bags. Pricing was dropped.`,
         );
       } catch (e) {
         setError(e instanceof Error ? e.message : "Import failed.");
@@ -119,7 +138,7 @@ export default function BagListsPage() {
         if (fileRef.current) fileRef.current.value = "";
       }
     },
-    [addList],
+    [addManifest],
   );
 
   /** Pull the sheet currently open in the Order Editor. */
@@ -137,6 +156,7 @@ export default function BagListsPage() {
       const session = JSON.parse(raw) as {
         title?: string;
         rows?: EditableRow[];
+        containerNumber?: string;
       };
       const rows = Array.isArray(session.rows) ? session.rows : [];
       const usable = rows.filter((r) => Number(r.qty) > 0);
@@ -144,20 +164,24 @@ export default function BagListsPage() {
         setError("The Order Editor sheet has no items with bags remaining.");
         return;
       }
-      const list = createBagList(session.title || "Order", usable);
-      addList(list);
+      const manifest = createManifest(
+        session.title || "Order",
+        usable,
+        session.containerNumber ?? "",
+      );
+      addManifest(manifest);
       setNotice(
-        `Pulled "${list.title}" from the Order Editor - ${list.items.length} items, ${sumQty(list.items)} bags.`,
+        `Pulled "${manifest.title}" from the Order Editor - ${manifest.items.length} items, ${sumQty(manifest.items)} bags.`,
       );
     } catch {
       setError("Could not read the Order Editor sheet.");
     }
-  }, [addList]);
+  }, [addManifest]);
 
-  /* ------------------------------- targets ------------------------------- */
+  /* ------------------------- targets and container ------------------------ */
 
   const resolved = useMemo(
-    () => (active ? resolveBagList(active) : null),
+    () => (active ? resolveManifest(active) : null),
     [active],
   );
 
@@ -168,7 +192,12 @@ export default function BagListsPage() {
     return checkTarget(active.items, parsedTarget);
   }, [active, targetDraft]);
 
-  const applyTarget = useCallback(() => {
+  const container = useMemo(
+    () => (active ? checkContainerNumber(active.containerNumber) : null),
+    [active],
+  );
+
+  const generate = useCallback(() => {
     if (!active) return;
     const draft = targetDraft.trim();
     const value = draft === "" ? null : Number(draft);
@@ -177,51 +206,63 @@ export default function BagListsPage() {
       setError(check.message ?? "That target cannot be used.");
       return;
     }
-    updateList(active.id, { target: Math.floor(value as number), seed: randomSeed() });
+    replaceManifest(generateManifest(active, Math.floor(value as number)));
     setError(null);
     setNotice(
-      `Reduced to exactly ${value} bags across ${active.items.length} items.`,
+      `Generated a manifest of exactly ${value} bags across ${active.items.length} items. It is saved, so re-downloading gives the same figures.`,
     );
-  }, [active, targetDraft, updateList]);
+  }, [active, targetDraft, replaceManifest]);
 
-  const reshuffle = useCallback(() => {
+  const rerandomize = useCallback(() => {
     if (!active || active.target === null) return;
-    updateList(active.id, { seed: randomSeed() });
-    setNotice("Reshuffled - a different split totalling the same number.");
-  }, [active, updateList]);
+    if (
+      !window.confirm(
+        "Re-randomise this manifest?\n\nThe saved distribution will be replaced with a new one totalling the same number of bags. Any copy already sent out will no longer match.",
+      )
+    ) {
+      return;
+    }
+    replaceManifest(generateManifest(active, active.target, randomSeed()));
+    setNotice("Re-randomised - a different split totalling the same number.");
+  }, [active, replaceManifest]);
 
-  const clearTarget = useCallback(() => {
+  const reset = useCallback(() => {
     if (!active) return;
-    updateList(active.id, { target: null });
+    replaceManifest(clearGenerated(active));
     setTargetDraft("");
-    setNotice("Target cleared - showing the original quantities.");
-  }, [active, updateList]);
+    setNotice("Cleared - showing the original quantities.");
+  }, [active, replaceManifest]);
 
-  const removeList = useCallback(() => {
+  const removeManifest = useCallback(() => {
     if (!active || !doc) return;
-    if (!window.confirm(`Remove the bag list for "${active.title}"?`)) return;
+    if (!window.confirm(`Remove the manifest for "${active.title}"?`)) return;
     persist({
       ...doc,
-      lists: doc.lists.filter((l) => l.id !== active.id),
+      manifests: doc.manifests.filter((m) => m.id !== active.id),
       updatedAt: new Date().toISOString(),
     });
     setActiveId(null);
-    setNotice("Bag list removed.");
+    setNotice("Manifest removed.");
   }, [active, doc, persist]);
 
   /* ------------------------------- exports ------------------------------- */
 
   const download = useCallback(
     async (format: "pdf" | "xlsx") => {
-      if (!active || !resolved) return;
+      if (!active || !resolved || !container) return;
+      if (!container.ok) {
+        setError(container.message ?? "A valid container number is required.");
+        return;
+      }
       setBusy(format);
       setError(null);
       try {
-        const res = await fetch("/api/bag-list", {
+        const res = await fetch("/api/bag-manifest", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             title: active.title,
+            containerNumber: container.value,
             format,
             items: resolved.items.map((i) => ({ name: i.name, qty: i.qty })),
           }),
@@ -234,7 +275,7 @@ export default function BagListsPage() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `${active.title} - Bag List.${format}`;
+        a.download = manifestFilename(active.title, container.value, format);
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -245,7 +286,7 @@ export default function BagListsPage() {
         setBusy(null);
       }
     },
-    [active, resolved],
+    [active, resolved, container],
   );
 
   /* -------------------------------- render -------------------------------- */
@@ -253,25 +294,25 @@ export default function BagListsPage() {
   const visibleItems = useMemo(() => {
     if (!resolved) return [];
     const q = search.trim().toLowerCase();
-    if (!q) return resolved.items.map((item, i) => ({ item, i }));
-    return resolved.items
-      .map((item, i) => ({ item, i }))
-      .filter(({ item }) => item.name.toLowerCase().includes(q));
+    const rows = resolved.items.map((item, i) => ({ item, i }));
+    if (!q) return rows;
+    return rows.filter(({ item }) => item.name.toLowerCase().includes(q));
   }, [resolved, search]);
 
   const originalTotal = active ? sumQty(active.items) : 0;
+  const canExport = Boolean(container?.ok) && (resolved?.items.length ?? 0) > 0;
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-8 sm:py-12">
       <header className="mb-8">
         <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight text-gray-900 sm:text-3xl">
           <ClipboardList className="h-7 w-7 text-brand-600" />
-          Order Bag Lists
+          Order Bag Manifests
         </h1>
         <p className="mt-2 max-w-2xl text-sm text-gray-500">
-          A manifest you can hand out: item names and bag counts only, with no
-          prices anywhere. Set the total number of bags and the quantities are
-          reduced at random to match it exactly.
+          A manifest for shippers and customs: order title, container number,
+          item names and bag counts. No prices anywhere. Set the total number of
+          bags and the quantities are reduced at random to match it exactly.
         </p>
       </header>
 
@@ -298,7 +339,7 @@ export default function BagListsPage() {
       )}
 
       {/* Empty state */}
-      {doc && lists.length === 0 && (
+      {doc && manifests.length === 0 && (
         <div
           onDragOver={(e) => {
             e.preventDefault();
@@ -357,7 +398,7 @@ export default function BagListsPage() {
         </div>
       )}
 
-      {lists.length > 0 && (
+      {manifests.length > 0 && (
         <div className="grid gap-5 lg:grid-cols-[260px_1fr]">
           {/* Order picker */}
           <aside className="space-y-3">
@@ -366,13 +407,12 @@ export default function BagListsPage() {
                 Orders
               </p>
               <ul className="space-y-1">
-                {lists.map((l) => {
-                  const isActive = active?.id === l.id;
-                  const total = sumQty(l.items);
+                {manifests.map((m) => {
+                  const isActive = active?.id === m.id;
                   return (
-                    <li key={l.id}>
+                    <li key={m.id}>
                       <button
-                        onClick={() => setActiveId(l.id)}
+                        onClick={() => setActiveId(m.id)}
                         className={cn(
                           "w-full rounded-lg px-3 py-2 text-left transition",
                           isActive
@@ -386,16 +426,16 @@ export default function BagListsPage() {
                             isActive ? "text-brand-800" : "text-gray-800",
                           )}
                         >
-                          {l.title}
+                          {m.title}
                         </span>
-                        <span className="block text-xs text-gray-500">
-                          {l.items.length} items ·{" "}
-                          {l.target !== null ? (
+                        <span className="block truncate text-xs text-gray-500">
+                          {m.containerNumber || "no container"} ·{" "}
+                          {m.generated ? (
                             <span className="font-medium text-brand-700">
-                              target {l.target}
+                              {sumQty(m.generated)} bags
                             </span>
                           ) : (
-                            `${total} bags`
+                            `${sumQty(m.items)} bags`
                           )}
                         </span>
                       </button>
@@ -428,51 +468,109 @@ export default function BagListsPage() {
             </div>
           </aside>
 
-          {/* Active list */}
-          {active && resolved && validation && (
+          {/* Active manifest */}
+          {active && resolved && validation && container && (
             <section className="space-y-5">
-              {/* Title + target */}
+              {/* Order details */}
               <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <label
-                      htmlFor="bl-title"
+                      htmlFor="bm-title"
                       className="text-[11px] font-medium uppercase tracking-wide text-gray-500"
                     >
                       Order title
                     </label>
                     <input
-                      id="bl-title"
+                      id="bm-title"
                       value={active.title}
                       onChange={(e) =>
-                        updateList(active.id, { title: e.target.value })
+                        updateManifest(active.id, { title: e.target.value })
                       }
                       className="mt-1 w-full rounded-lg border border-transparent bg-transparent px-0 py-1 text-xl font-bold text-gray-900 outline-none transition focus:border-gray-300 focus:bg-gray-50 focus:px-3"
                     />
                   </div>
                   <button
-                    onClick={removeList}
-                    title="Remove this bag list"
+                    onClick={removeManifest}
+                    title="Remove this manifest"
                     className="mt-4 rounded-md p-2 text-red-500 transition hover:bg-red-50"
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
                 </div>
 
+                {/* Container number */}
+                <div className="mt-4">
+                  <label
+                    htmlFor="bm-container"
+                    className="mb-1 block text-xs font-medium text-gray-600"
+                  >
+                    Container number
+                  </label>
+                  <div className="relative sm:w-72">
+                    <ContainerIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                    <input
+                      id="bm-container"
+                      value={active.containerNumber}
+                      onChange={(e) =>
+                        updateManifest(active.id, {
+                          // Stored uppercase, separators stripped as you type.
+                          containerNumber: e.target.value
+                            .replace(/[\s-]+/g, "")
+                            .toUpperCase()
+                            .slice(0, 11),
+                        })
+                      }
+                      placeholder="GAOU7441740"
+                      className={cn(
+                        "w-full rounded-lg border py-2 pl-9 pr-10 font-mono text-sm tracking-wide outline-none transition focus:ring-2",
+                        active.containerNumber === ""
+                          ? "border-gray-300 focus:border-brand-500 focus:ring-brand-100"
+                          : container.ok && container.checkDigitValid
+                            ? "border-emerald-300 bg-emerald-50/40 focus:border-emerald-400 focus:ring-emerald-100"
+                            : "border-amber-300 bg-amber-50 focus:border-amber-400 focus:ring-amber-100",
+                      )}
+                    />
+                    {active.containerNumber !== "" && (
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2">
+                        {container.ok && container.checkDigitValid ? (
+                          <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                        ) : (
+                          <AlertTriangle className="h-4 w-4 text-amber-500" />
+                        )}
+                      </span>
+                    )}
+                  </div>
+                  <p
+                    className={cn(
+                      "mt-1 text-xs",
+                      active.containerNumber !== "" && !container.checkDigitValid
+                        ? "text-amber-700"
+                        : "text-gray-500",
+                    )}
+                  >
+                    {active.containerNumber === ""
+                      ? "Four letters then seven digits. Required before exporting."
+                      : (container.message ??
+                        "Valid ISO 6346 number, check digit agrees.")}
+                  </p>
+                </div>
+
                 <div className="mt-4 grid grid-cols-3 gap-3">
                   <Stat label="Items" value={String(active.items.length)} />
                   <Stat label="Original bags" value={String(originalTotal)} />
                   <Stat
-                    label="Bags on list"
+                    label="Bags on manifest"
                     value={String(resolved.total)}
-                    highlight={resolved.reduced}
+                    highlight={resolved.generated}
                   />
                 </div>
 
+                {/* Target */}
                 <div className="mt-5 flex flex-wrap items-end gap-3">
                   <div>
                     <label
-                      htmlFor="bl-target"
+                      htmlFor="bm-target"
                       className="mb-1 block text-xs font-medium text-gray-600"
                     >
                       Target total bags
@@ -480,11 +578,11 @@ export default function BagListsPage() {
                     <div className="relative w-44">
                       <Target className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
                       <input
-                        id="bl-target"
+                        id="bm-target"
                         value={targetDraft}
                         onChange={(e) => setTargetDraft(e.target.value)}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter") applyTarget();
+                          if (e.key === "Enter") generate();
                         }}
                         inputMode="numeric"
                         placeholder={`${validation.min} - ${validation.max}`}
@@ -499,27 +597,27 @@ export default function BagListsPage() {
                   </div>
 
                   <button
-                    onClick={applyTarget}
+                    onClick={generate}
                     disabled={!validation.ok}
                     className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    Generate list
+                    {resolved.generated ? "Regenerate" : "Generate manifest"}
                   </button>
 
-                  {active.target !== null && (
+                  {resolved.generated && (
                     <>
                       <button
-                        onClick={reshuffle}
+                        onClick={rerandomize}
                         className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
                       >
                         <Shuffle className="h-4 w-4" />
-                        Reshuffle
+                        Re-randomise
                       </button>
                       <button
-                        onClick={clearTarget}
+                        onClick={reset}
                         className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50"
                       >
-                        Clear target
+                        Clear
                       </button>
                     </>
                   )}
@@ -538,12 +636,16 @@ export default function BagListsPage() {
                     : `Anywhere from ${validation.min} (one bag per item) to ${validation.max} (the order as imported).`}
                 </p>
 
-                {resolved.reduced && (
-                  <p className="mt-3 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-                    <CheckCircle2 className="h-4 w-4 shrink-0" />
-                    Showing {resolved.total} bags across {active.items.length}{" "}
-                    items - {originalTotal - resolved.total} removed, every item
-                    keeping at least one.
+                {resolved.generated && (
+                  <p className="mt-3 flex items-start gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>
+                      Saved manifest of {resolved.total} bags across{" "}
+                      {active.items.length} items -{" "}
+                      {originalTotal - resolved.total} removed, every item
+                      keeping at least one. Re-downloading reproduces these exact
+                      figures.
+                    </span>
                   </p>
                 )}
               </div>
@@ -561,7 +663,7 @@ export default function BagListsPage() {
                     />
                   </div>
                   <span className="hidden text-xs text-gray-400 sm:inline">
-                    No prices on this list
+                    No prices on this manifest
                   </span>
                 </div>
 
@@ -590,7 +692,7 @@ export default function BagListsPage() {
                       )}
                       {visibleItems.map(({ item, i }) => {
                         const was = active.items[i]?.qty ?? item.qty;
-                        const changed = resolved.reduced && was !== item.qty;
+                        const changed = resolved.generated && was !== item.qty;
                         return (
                           <tr
                             key={`${item.name}-${i}`}
@@ -635,11 +737,17 @@ export default function BagListsPage() {
               </div>
 
               {/* Exports */}
-              <div className="flex flex-wrap justify-end gap-3">
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {!container.ok && (
+                  <span className="flex items-center gap-1.5 text-sm text-amber-700">
+                    <AlertTriangle className="h-4 w-4" />
+                    Add a container number to export
+                  </span>
+                )}
                 <button
                   onClick={() => download("xlsx")}
-                  disabled={busy !== null}
-                  className="inline-flex items-center gap-2 rounded-xl border border-emerald-300 bg-white px-5 py-3 text-sm font-semibold text-emerald-700 shadow-sm transition hover:bg-emerald-50 disabled:opacity-60"
+                  disabled={busy !== null || !canExport}
+                  className="inline-flex items-center gap-2 rounded-xl border border-emerald-300 bg-white px-5 py-3 text-sm font-semibold text-emerald-700 shadow-sm transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {busy === "xlsx" ? (
                     <Loader2 className="h-5 w-5 animate-spin" />
@@ -650,8 +758,8 @@ export default function BagListsPage() {
                 </button>
                 <button
                   onClick={() => download("pdf")}
-                  disabled={busy !== null}
-                  className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-brand-600/25 transition hover:bg-brand-700 disabled:opacity-60"
+                  disabled={busy !== null || !canExport}
+                  className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-brand-600/25 transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {busy === "pdf" ? (
                     <Loader2 className="h-5 w-5 animate-spin" />

@@ -18,8 +18,11 @@
 import { readLocal, writeLocal } from "./storage";
 import { LIMITS, clampNumber } from "./types";
 import { sanitizeLine } from "./buyer";
+import { normalizeContainerNumber } from "./container";
 
-export const BAG_LISTS_KEY = "balebook.bagLists.v1";
+export const MANIFESTS_KEY = "balebook.bagManifests.v1";
+/** Data saved before the module was renamed from "bag lists". */
+const MANIFESTS_KEY_LEGACY = "balebook.bagLists.v1";
 
 /** One line on a manifest. */
 export interface BagItem {
@@ -27,34 +30,47 @@ export interface BagItem {
   qty: number;
 }
 
-export interface BagList {
+export interface BagManifest {
   id: string;
   title: string;
-  /** Quantities exactly as imported. Never mutated by generating a target. */
+  /** ISO 6346 code, stored uppercase. Required before exporting. */
+  containerNumber: string;
+  /** Quantities exactly as imported. Never mutated by generating a manifest. */
   items: BagItem[];
   /** Requested grand total, or null while it has not been set. */
   target: number | null;
-  /** Seed for the random reduction. A new seed reshuffles the distribution. */
+  /**
+   * The distribution as generated, stored rather than recomputed.
+   *
+   * A manifest goes to a shipper or to customs, so the numbers on it are a
+   * record. Re-downloading must reproduce the same document byte for byte, and
+   * it must keep doing so even if the reduction algorithm is ever changed. That
+   * only holds if the figures themselves are saved, so they are. Re-randomising
+   * is an explicit action that overwrites this.
+   */
+  generated: BagItem[] | null;
+  /** Seed used for the stored distribution, kept for reference. */
   seed: number;
   createdAt: string;
+  generatedAt: string | null;
 }
 
-export interface BagListDoc {
-  app: "balebook-bag-lists";
+export interface BagManifestDoc {
+  app: "balebook-bag-manifests";
   version: number;
-  lists: BagList[];
+  manifests: BagManifest[];
   updatedAt: string;
 }
 
-export const BAG_LIST_VERSION = 1;
+export const MANIFEST_VERSION = 2;
 /** Enough for many orders without letting the browser store grow unbounded. */
-export const MAX_LISTS = 50;
+export const MAX_MANIFESTS = 50;
 
-export function emptyBagListDoc(): BagListDoc {
+export function emptyManifestDoc(): BagManifestDoc {
   return {
-    app: "balebook-bag-lists",
-    version: BAG_LIST_VERSION,
-    lists: [],
+    app: "balebook-bag-manifests",
+    version: MANIFEST_VERSION,
+    manifests: [],
     updatedAt: new Date().toISOString(),
   };
 }
@@ -207,79 +223,155 @@ export function reduceToTarget(
 }
 
 /**
- * The rows a list should display and export: the reduced quantities when a
- * valid target is set, otherwise the order as imported.
+ * The rows a manifest should display and export.
+ *
+ * Once generated, the stored distribution is used verbatim - never recomputed -
+ * so a re-download is always the same document. Before that, the order shows
+ * through as imported.
  */
-export function resolveBagList(list: BagList): {
+export function resolveManifest(manifest: BagManifest): {
   items: BagItem[];
   total: number;
-  reduced: boolean;
+  generated: boolean;
 } {
-  const check = checkTarget(list.items, list.target);
-  if (list.target !== null && check.ok) {
-    const items = reduceToTarget(list.items, list.target, list.seed);
-    return { items, total: sumQty(items), reduced: true };
+  if (manifest.generated && manifest.generated.length > 0) {
+    return {
+      items: manifest.generated,
+      total: sumQty(manifest.generated),
+      generated: true,
+    };
   }
-  return { items: list.items, total: sumQty(list.items), reduced: false };
+  return {
+    items: manifest.items,
+    total: sumQty(manifest.items),
+    generated: false,
+  };
+}
+
+/**
+ * Produce and store a distribution for `target`. Used both by "generate" and by
+ * "re-randomise" - the only difference is that a fresh seed is passed in.
+ */
+export function generateManifest(
+  manifest: BagManifest,
+  target: number,
+  seed: number = randomSeed(),
+): BagManifest {
+  const generated = reduceToTarget(manifest.items, target, seed);
+  return {
+    ...manifest,
+    target,
+    seed,
+    generated,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+/** Discard the stored distribution and go back to the imported quantities. */
+export function clearGenerated(manifest: BagManifest): BagManifest {
+  return { ...manifest, target: null, generated: null, generatedAt: null };
 }
 
 /* ------------------------------ persistence ------------------------------ */
 
-export function parseBagListDoc(input: unknown): BagListDoc {
+export function parseManifestDoc(input: unknown): BagManifestDoc {
   const raw = (input ?? {}) as Record<string, unknown>;
-  const lists = Array.isArray(raw.lists) ? raw.lists : [];
+  // Accepts documents saved before the rename, which used "lists".
+  const entries = Array.isArray(raw.manifests)
+    ? raw.manifests
+    : Array.isArray(raw.lists)
+      ? raw.lists
+      : [];
 
-  const clean: BagList[] = lists.slice(0, MAX_LISTS).map((entry, i) => {
-    const l = (entry ?? {}) as Record<string, unknown>;
-    const items = toBagItems(Array.isArray(l.items) ? l.items : []);
-    const rawTarget = Number(l.target);
-    return {
-      id: String(l.id ?? uid("bl")),
-      title: sanitizeLine(l.title, LIMITS.title) || `Order ${i + 1}`,
-      items,
-      target:
-        l.target === null || l.target === undefined || !Number.isFinite(rawTarget)
+  const clean: BagManifest[] = entries
+    .slice(0, MAX_MANIFESTS)
+    .map((entry, i) => {
+      const m = (entry ?? {}) as Record<string, unknown>;
+      const items = toBagItems(Array.isArray(m.items) ? m.items : []);
+      const rawTarget = Number(m.target);
+      const target =
+        m.target === null ||
+        m.target === undefined ||
+        !Number.isFinite(rawTarget)
           ? null
-          : Math.floor(rawTarget),
-      seed: Number.isFinite(Number(l.seed)) ? Number(l.seed) : randomSeed(),
-      createdAt: String(l.createdAt ?? new Date().toISOString()),
-    };
-  });
+          : Math.floor(rawTarget);
+
+      // A stored distribution is only trusted if it still lines up with the
+      // order: same number of lines, and totalling the recorded target.
+      let generated: BagItem[] | null = null;
+      if (Array.isArray(m.generated)) {
+        const candidate = toBagItems(m.generated);
+        const matchesShape = candidate.length === items.length;
+        const matchesTarget = target === null || sumQty(candidate) === target;
+        if (matchesShape && matchesTarget && candidate.length > 0) {
+          generated = candidate;
+        }
+      }
+
+      return {
+        id: String(m.id ?? uid("bm")),
+        title: sanitizeLine(m.title, LIMITS.title) || `Order ${i + 1}`,
+        containerNumber: normalizeContainerNumber(m.containerNumber),
+        items,
+        target,
+        generated,
+        seed: Number.isFinite(Number(m.seed)) ? Number(m.seed) : randomSeed(),
+        createdAt: String(m.createdAt ?? new Date().toISOString()),
+        generatedAt: m.generatedAt ? String(m.generatedAt) : null,
+      };
+    });
 
   return {
-    app: "balebook-bag-lists",
-    version: Number(raw.version) || BAG_LIST_VERSION,
-    lists: clean,
+    app: "balebook-bag-manifests",
+    version: Number(raw.version) || MANIFEST_VERSION,
+    manifests: clean,
     updatedAt: String(raw.updatedAt ?? new Date().toISOString()),
   };
 }
 
-export function loadBagLists(): BagListDoc {
-  if (typeof window === "undefined") return emptyBagListDoc();
+export function loadManifests(): BagManifestDoc {
+  if (typeof window === "undefined") return emptyManifestDoc();
   try {
-    const raw = readLocal(BAG_LISTS_KEY);
-    if (!raw) return emptyBagListDoc();
-    return parseBagListDoc(JSON.parse(raw));
+    const raw = readLocal(MANIFESTS_KEY, MANIFESTS_KEY_LEGACY);
+    if (!raw) return emptyManifestDoc();
+    return parseManifestDoc(JSON.parse(raw));
   } catch {
-    return emptyBagListDoc();
+    return emptyManifestDoc();
   }
 }
 
-export function saveBagLists(doc: BagListDoc): void {
-  writeLocal(BAG_LISTS_KEY, JSON.stringify(doc));
+export function saveManifests(doc: BagManifestDoc): void {
+  writeLocal(MANIFESTS_KEY, JSON.stringify(doc));
 }
 
-/** Build a new list from an imported order. */
-export function createBagList(
+/** Build a new manifest from an imported order. */
+export function createManifest(
   title: string,
   source: Array<{ name?: unknown; qty?: unknown }>,
-): BagList {
+  containerNumber = "",
+): BagManifest {
   return {
-    id: uid("bl"),
+    id: uid("bm"),
     title: sanitizeLine(title, LIMITS.title) || "Order",
+    containerNumber: normalizeContainerNumber(containerNumber),
     items: toBagItems(source),
     target: null,
+    generated: null,
     seed: randomSeed(),
     createdAt: new Date().toISOString(),
+    generatedAt: null,
   };
+}
+
+/** `<Order Title> - <Container Number> - Bags.<ext>` */
+export function manifestFilename(
+  title: string,
+  containerNumber: string,
+  ext: string,
+): string {
+  const safe = (s: string) => s.replace(/[^\w\d\- ]+/g, "").trim();
+  const parts = [safe(title) || "Order", safe(containerNumber), "Bags"].filter(
+    (p) => p !== "",
+  );
+  return `${parts.join(" - ")}.${ext}`;
 }

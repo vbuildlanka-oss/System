@@ -1,52 +1,54 @@
 import ExcelJS from "exceljs";
-import type { BagItem } from "./bagList";
+import type { BagItem } from "./bagManifest";
 
 /**
- * The spreadsheet version of a bag list.
+ * The spreadsheet version of a bag manifest.
  *
  * Layout is fixed so the Total formula is predictable:
  *
- *   row 1          title
- *   row 2          Item Name | Quantity
- *   row 3 .. n+2   the items
- *   row n+3        Total     | =SUM(B3:B{n+2})
+ *   row 1          order title
+ *   row 2          Container Number: <number>
+ *   row 3          Item Name | Quantity
+ *   row 4 .. n+3   the items
+ *   row n+4        Total     | =SUM(B4:B{n+3})
  *
  * The total is a live formula rather than a number. If someone adjusts a
- * quantity in the sheet, the total follows instead of silently disagreeing
- * with the rows above it.
+ * quantity in the sheet, the total follows instead of silently disagreeing with
+ * the rows above it.
  */
 
-/** First row holding data. Row 1 is the title, row 2 the header. */
-export const DATA_START_ROW = 3;
+/** First row holding data: title, container and header occupy rows 1-3. */
+export const DATA_START_ROW = 4;
 
-export interface BagListXlsxData {
+export interface ManifestXlsxData {
   title: string;
+  containerNumber: string;
   items: BagItem[];
 }
 
-/** The formula placed in the Total cell, e.g. "SUM(B3:B87)". */
+/** The formula placed in the Total cell, e.g. "SUM(B4:B88)". */
 export function totalFormula(itemCount: number): string {
   const first = DATA_START_ROW;
   const last = DATA_START_ROW + Math.max(itemCount, 1) - 1;
   return `SUM(B${first}:B${last})`;
 }
 
-export async function buildBagListXlsx(
-  data: BagListXlsxData,
+export async function buildManifestXlsx(
+  data: ManifestXlsxData,
 ): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "BaleBook";
   workbook.created = new Date();
 
-  const sheet = workbook.addWorksheet("Bag List", {
-    views: [{ state: "frozen", ySplit: 2 }],
+  const sheet = workbook.addWorksheet("Bag Manifest", {
+    views: [{ state: "frozen", ySplit: 3 }],
   });
   sheet.columns = [
     { key: "name", width: 46 },
     { key: "qty", width: 14 },
   ];
 
-  // Row 1 - title
+  // Row 1 - order title
   sheet.mergeCells("A1:B1");
   const titleCell = sheet.getCell("A1");
   titleCell.value = data.title;
@@ -54,23 +56,30 @@ export async function buildBagListXlsx(
   titleCell.alignment = { vertical: "middle" };
   sheet.getRow(1).height = 22;
 
-  // Row 2 - header
-  const header = sheet.getRow(2);
+  // Row 2 - container number
+  sheet.mergeCells("A2:B2");
+  const containerCell = sheet.getCell("A2");
+  containerCell.value = `Container Number: ${data.containerNumber}`;
+  containerCell.font = { bold: true, size: 11 };
+  containerCell.alignment = { vertical: "middle" };
+  sheet.getRow(2).height = 18;
+
+  // Row 3 - table header
+  const header = sheet.getRow(3);
   header.values = ["Item Name", "Quantity"];
   header.font = { bold: true, color: { argb: "FFFFFFFF" } };
   header.alignment = { vertical: "middle" };
   header.height = 18;
-  for (const ref of ["A2", "B2"]) {
-    const cell = sheet.getCell(ref);
-    cell.fill = {
+  for (const ref of ["A3", "B3"]) {
+    sheet.getCell(ref).fill = {
       type: "pattern",
       pattern: "solid",
       fgColor: { argb: "FF1F2937" },
     };
   }
-  sheet.getCell("B2").alignment = { horizontal: "right", vertical: "middle" };
+  sheet.getCell("B3").alignment = { horizontal: "right", vertical: "middle" };
 
-  // Rows 3.. - the items
+  // Rows 4.. - the items
   data.items.forEach((item, i) => {
     const row = sheet.getRow(DATA_START_ROW + i);
     row.getCell(1).value = item.name;
@@ -99,6 +108,9 @@ export async function buildBagListXlsx(
       fgColor: { argb: "FFE0E7FF" },
     };
   }
+
+  // Repeat the heading and header rows when printed across several pages.
+  sheet.pageSetup.printTitlesRow = "1:3";
 
   const out = await workbook.xlsx.writeBuffer();
   return Buffer.from(out);

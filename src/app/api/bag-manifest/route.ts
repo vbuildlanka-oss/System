@@ -1,27 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { LIMITS } from "@/lib/types";
 import { sanitizeLine } from "@/lib/buyer";
-import { toBagItems, sumQty, type BagItem } from "@/lib/bagList";
-import { renderBagListPdf } from "@/lib/bagListPdf";
-import { buildBagListXlsx } from "@/lib/bagListXlsx";
+import {
+  manifestFilename,
+  sumQty,
+  toBagItems,
+  type BagItem,
+} from "@/lib/bagManifest";
+import { checkContainerNumber } from "@/lib/container";
+import { renderManifestPdf } from "@/lib/bagManifestPdf";
+import { buildManifestXlsx } from "@/lib/bagManifestXlsx";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-interface BagListBody {
+interface ManifestBody {
   title?: unknown;
+  containerNumber?: unknown;
   items?: unknown;
   format?: unknown;
   subtitle?: unknown;
 }
 
-function safeFilename(title: string, ext: string): string {
-  const base = title.replace(/[^\w\d\- ]+/g, "").trim() || "Order";
-  return `${base} - Bag List.${ext}`;
-}
-
 /**
- * Turn a bag list into a file.
+ * Turn a bag manifest into a file.
  *
  * Both formats are produced from the same normalised rows in this one place, so
  * the .xlsx and the .pdf for a given request cannot disagree. Quantities are
@@ -29,11 +31,21 @@ function safeFilename(title: string, ext: string): string {
  */
 export async function POST(req: NextRequest) {
   try {
-    const body = (await req.json()) as BagListBody;
+    const body = (await req.json()) as ManifestBody;
 
     const format = body.format === "xlsx" ? "xlsx" : "pdf";
     const title = sanitizeLine(body.title, LIMITS.title) || "Order";
     const subtitle = sanitizeLine(body.subtitle, LIMITS.subtitle) || undefined;
+
+    // A manifest without its container number is not much use to a shipper, so
+    // the format is enforced here as well as in the page.
+    const container = checkContainerNumber(String(body.containerNumber ?? ""));
+    if (!container.ok) {
+      return NextResponse.json(
+        { error: container.message ?? "A valid container number is required." },
+        { status: 400 },
+      );
+    }
 
     if (!Array.isArray(body.items) || body.items.length === 0) {
       return NextResponse.json(
@@ -58,21 +70,28 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const filename = manifestFilename(title, container.value, format);
+
     if (format === "xlsx") {
-      const xlsx = await buildBagListXlsx({ title, items });
+      const xlsx = await buildManifestXlsx({
+        title,
+        containerNumber: container.value,
+        items,
+      });
       return new NextResponse(new Uint8Array(xlsx), {
         status: 200,
         headers: {
           "Content-Type":
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-          "Content-Disposition": `attachment; filename="${safeFilename(title, "xlsx")}"`,
+          "Content-Disposition": `attachment; filename="${filename}"`,
           "Cache-Control": "no-store",
         },
       });
     }
 
-    const pdf = await renderBagListPdf({
+    const pdf = await renderManifestPdf({
       title,
+      containerNumber: container.value,
       items,
       total: sumQty(items),
       subtitle,
@@ -81,14 +100,14 @@ export async function POST(req: NextRequest) {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${safeFilename(title, "pdf")}"`,
+        "Content-Disposition": `attachment; filename="${filename}"`,
         "Cache-Control": "no-store",
       },
     });
   } catch (err) {
-    console.error("bag-list error:", err);
+    console.error("bag-manifest error:", err);
     return NextResponse.json(
-      { error: "Failed to generate the bag list." },
+      { error: "Failed to generate the manifest." },
       { status: 500 },
     );
   }

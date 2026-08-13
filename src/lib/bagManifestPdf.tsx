@@ -7,14 +7,14 @@ import {
   StyleSheet,
   renderToBuffer,
 } from "@react-pdf/renderer";
-import type { BagItem } from "./bagList";
+import type { BagItem } from "./bagManifest";
 
 /**
- * The printable bag list: item names and bag counts only.
+ * The printable bag manifest: item names and bag counts only.
  *
  * Deliberately a separate document from the price list renderer. This one has
  * no money columns at all, so there is no code path that could put a price on a
- * manifest meant to be handed out.
+ * manifest meant to be handed to a shipper or to customs.
  */
 
 const styles = StyleSheet.create({
@@ -42,6 +42,12 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontFamily: "Helvetica-Bold",
     marginTop: 6,
+  },
+  container: {
+    fontSize: 11,
+    fontFamily: "Helvetica-Bold",
+    marginTop: 5,
+    color: "#374151",
   },
   subtitle: { fontSize: 9, marginTop: 4, color: "#6b7280" },
   table: { width: "100%" },
@@ -92,14 +98,15 @@ const styles = StyleSheet.create({
   },
 });
 
-export interface BagListPdfData {
+export interface ManifestPdfData {
   title: string;
+  containerNumber: string;
   items: BagItem[];
   total: number;
   subtitle?: string;
 }
 
-function BagListDocument({ data }: { data: BagListPdfData }) {
+function ManifestDocument({ data }: { data: ManifestPdfData }) {
   return (
     <Document
       author="BaleBook"
@@ -111,6 +118,9 @@ function BagListDocument({ data }: { data: BagListPdfData }) {
         <View style={styles.header} fixed>
           <Text style={styles.brand}>BALEBOOK</Text>
           <Text style={styles.title}>{data.title}</Text>
+          <Text style={styles.container}>
+            Container Number: {data.containerNumber}
+          </Text>
           {data.subtitle ? (
             <Text style={styles.subtitle}>{data.subtitle}</Text>
           ) : null}
@@ -152,8 +162,8 @@ function BagListDocument({ data }: { data: BagListPdfData }) {
   );
 }
 
-export async function renderBagListPdf(
-  data: BagListPdfData,
+export async function renderManifestPdf(
+  data: ManifestPdfData,
 ): Promise<Buffer> {
-  return renderToBuffer(<BagListDocument data={data} />);
+  return renderToBuffer(<ManifestDocument data={data} />);
 }
