@@ -38,7 +38,54 @@ import { buildManifestXlsx, totalFormula } from "../src/lib/bagManifestXlsx";
 import { renderManifestPdf } from "../src/lib/bagManifestPdf";
 import { POST as manifestPost } from "../src/app/api/bag-manifest/route";
 
+import { inflateRawSync } from "node:zlib";
+
 const pdfParse = require("pdf-parse/lib/pdf-parse.js");
+
+/**
+ * Read one file out of a .xlsx (a zip) without extra dependencies.
+ *
+ * Checking the XML that actually ends up in the file is the only way to be sure
+ * about a spreadsheet: ExcelJS does not read every property back, so asserting
+ * against its reader can pass while the file itself is wrong.
+ */
+function readZipEntry(zip: Buffer, wanted: string): string | null {
+  // Locate the end-of-central-directory record.
+  let eocd = -1;
+  for (let i = zip.length - 22; i >= 0; i -= 1) {
+    if (zip.readUInt32LE(i) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd === -1) return null;
+
+  const entries = zip.readUInt16LE(eocd + 10);
+  let p = zip.readUInt32LE(eocd + 16);
+
+  for (let n = 0; n < entries; n += 1) {
+    if (zip.readUInt32LE(p) !== 0x02014b50) return null;
+    const method = zip.readUInt16LE(p + 10);
+    const compSize = zip.readUInt32LE(p + 20);
+    const nameLen = zip.readUInt16LE(p + 28);
+    const extraLen = zip.readUInt16LE(p + 30);
+    const commentLen = zip.readUInt16LE(p + 32);
+    const localOffset = zip.readUInt32LE(p + 42);
+    const name = zip.subarray(p + 46, p + 46 + nameLen).toString();
+
+    if (name === wanted) {
+      const lNameLen = zip.readUInt16LE(localOffset + 26);
+      const lExtraLen = zip.readUInt16LE(localOffset + 28);
+      const start = localOffset + 30 + lNameLen + lExtraLen;
+      const data = zip.subarray(start, start + compSize);
+      return method === 0
+        ? data.toString()
+        : inflateRawSync(data).toString();
+    }
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return null;
+}
 
 let failures = 0;
 function check(cond: boolean, msg: string) {
@@ -342,6 +389,35 @@ async function pdfText(buf: Buffer): Promise<string> {
   check(
     formula === "SUM(B4:B88)",
     `the formula is SUM(B4:B88) as required (got ${formula})`,
+  );
+
+  // A formula alone leaves the cell blank in Google Sheets, LibreOffice,
+  // Numbers and most preview panes, which recalculate lazily or not at all.
+  // The cached result must be written next to the formula, and Excel must be
+  // told to recalculate on open so the formula stays authoritative.
+  const cachedResult =
+    typeof sheet.totalCell === "object" && sheet.totalCell
+      ? (sheet.totalCell as { result?: unknown }).result
+      : undefined;
+  check(
+    cachedResult === 520,
+    `the Total cell carries a cached value so it is visible immediately (got ${JSON.stringify(cachedResult)})`,
+  );
+  // Inspect the XML inside the file itself, not ExcelJS's view of it.
+  const workbookXml = readZipEntry(xlsxBuf, "xl/workbook.xml") ?? "";
+  check(
+    /fullCalcOnLoad="1"/.test(workbookXml),
+    "the file tells the spreadsheet app to recalculate on open",
+  );
+  const sheetXml = readZipEntry(xlsxBuf, "xl/worksheets/sheet1.xml") ?? "";
+  const totalRowXml = sheetXml.match(/<row r="89"[\s\S]*?<\/row>/)?.[0] ?? "";
+  check(
+    totalRowXml.includes("<f>SUM(B4:B88)</f>"),
+    "the Total cell in the file holds the SUM formula",
+  );
+  check(
+    /<v>520<\/v>/.test(totalRowXml),
+    `the Total cell in the file also holds the value 520, so it is never blank (${totalRowXml.slice(-60)})`,
   );
   check(
     totalFormula(85) === "SUM(B4:B88)" && totalFormula(1) === "SUM(B4:B4)",

@@ -71,6 +71,8 @@ and bag counts. No pricing anywhere.
   open in the Order Editor.
 - **Pricing is dropped at import**, not hidden at render, so no code path can
   put a price on a manifest.
+- **Order number** (e.g. `Sri Lanka 01`) is the heading of the document. It
+  replaced a separate order title, and is required before exporting.
 - **Container number** is validated ISO 6346 style — four letters then seven
   digits — and stored uppercase, with spaces and dashes stripped as you type. The
   check digit is verified and a mismatch is *flagged but not blocked*, since a
@@ -94,7 +96,7 @@ and bag counts. No pricing anywhere.
   heading and table header repeat on every page:
 
   ```
-  row 1        Sri Lanka Order 3 2026
+  row 1        Sri Lanka 01                  <- the order number, the heading
   row 2        Container Number: GAOU7441740
   row 3        Item Name | Quantity
   row 4..88    the items

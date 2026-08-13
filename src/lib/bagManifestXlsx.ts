@@ -42,6 +42,9 @@ export async function buildManifestXlsx(
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "BaleBook";
   workbook.created = new Date();
+  // Ask the spreadsheet app to recalculate when the file opens, so the Total
+  // formula is authoritative rather than the cached value written below.
+  workbook.calcProperties.fullCalcOnLoad = true;
 
   const sheet = workbook.addWorksheet("Bag Manifest", {
     views: [{ state: "frozen", ySplit: 3 }],
@@ -97,7 +100,14 @@ export async function buildManifestXlsx(
   const totalRow = sheet.getRow(totalRowNumber);
   totalRow.getCell(1).value = "Total";
   const totalCell = totalRow.getCell(2);
-  totalCell.value = { formula: totalFormula(data.items.length) };
+  // A formula needs a cached result as well as the formula itself. Excel
+  // recalculates on open, but Google Sheets, LibreOffice, Numbers and most
+  // preview panes show a formula cell as blank until they do - so the value is
+  // written alongside the formula and both stay in step.
+  totalCell.value = {
+    formula: totalFormula(data.items.length),
+    result: data.items.reduce((sum, item) => sum + item.qty, 0),
+  };
   totalCell.numFmt = "0";
   totalCell.alignment = { horizontal: "right" };
   totalRow.font = { bold: true };
