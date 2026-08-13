@@ -8,6 +8,7 @@ import {
   FileSpreadsheet,
   ListChecks,
   PencilRuler,
+  Scale,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 
@@ -17,6 +18,7 @@ const links = [
   { href: "/bag-manifests", label: "Bag Manifests", icon: ClipboardList },
   { href: "/stockpile", label: "Stockpile", icon: Boxes },
   { href: "/requests", label: "Requests", icon: ListChecks },
+  { href: "/balance", label: "Balance Sheet", icon: Scale },
 ];
 
 export default function Nav() {

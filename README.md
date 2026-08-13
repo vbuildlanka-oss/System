@@ -194,6 +194,49 @@ inventory.
 
 ---
 
+## 6. Balance Sheet (`/balance`)
+
+What each container brought in, what it cost, and which partner the money
+belongs to.
+
+- **Expenses** — an expense name, the **partner** it belongs to, and the amount.
+  The partner is required: an unattributed expense would make the per-partner
+  breakdown lie by omission.
+- **Profit by container** — record a **container ID** and its **turnover**, and
+  each container's profit, margin and costs are worked out for you.
+- **Two scopes, kept apart.** An expense can optionally be tagged to a container.
+  That is what makes per-container profit possible, without forcing you to guess
+  where overhead belongs:
+
+  | | Counts turnover | Counts tagged expenses | Counts untagged (general) expenses |
+  |---|---|---|---|
+  | **Net profit** (top of page) | yes | yes | **yes** |
+  | **Profit for one container** | that container's | that container's | **no** |
+
+  Leave the container blank and the expense is general overhead: it reduces the
+  net profit but is never silently attributed to a single container. Whenever any
+  general overhead exists, the page says so in plain words, and the CSV gives it
+  its own labelled line.
+- **A container that has cost money but earned nothing yet is still listed**,
+  showing the loss so far rather than hiding until the first sale.
+- **Expenses by partner** — totals, entry counts and each partner's share of all
+  spending, as a bar.
+- **Edit in place** — every name, partner, container and amount is editable
+  directly in the table, and every figure above re-derives as you type. Partner
+  and container fields suggest what you have already used.
+- **Search** across expense names, partners and container IDs.
+- **Validation**: an entry needs a name, a partner and an amount above zero;
+  container IDs are normalised to uppercase (`gaou 744174-0` → `GAOU7441740`) and
+  a bad ISO 6346 check digit raises a warning without blocking you — it is a
+  bookkeeping label, not an export.
+- **Exports** — a CSV holding both halves of the sheet, then the summary,
+  per-container and per-partner blocks, so it opens as a readable statement.
+- **Storage**: one JSON document, autosaved in the browser and downloadable.
+  Totals, profits and margins are always *calculated* from the entries, never
+  stored, so a figure can never drift from the rows it came from.
+
+---
+
 ## Deploy to Vercel (1-click)
 
 This app lives at the repository root, so Vercel auto-detects it as a Next.js
@@ -232,6 +275,7 @@ npx tsx scripts/verify-api.ts        # API routes: every success and failure pat
 npx tsx scripts/verify-bag-manifest.ts  # manifests: containers, reduction, exports
 npx tsx scripts/verify-refno.ts         # references: device tags, uniqueness
 npx tsx scripts/verify-request.ts       # buyer requests: matching, supplying, files
+npx tsx scripts/verify-balance.ts       # balance sheet: profit scopes, partners, CSV
 ```
 
 ---
