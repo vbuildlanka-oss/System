@@ -32,7 +32,14 @@ export interface BagItem {
 
 export interface BagManifest {
   id: string;
-  title: string;
+  /**
+   * The order number, e.g. "Sri Lanka Order 3 2026" or "SL-003".
+   *
+   * This is the headline of an exported manifest - the one thing the reader sees
+   * first - so it is required before exporting. It replaced a separate order
+   * title: two headings said the same thing twice.
+   */
+  orderNumber: string;
   /** ISO 6346 code, stored uppercase. Required before exporting. */
   containerNumber: string;
   /** Quantities exactly as imported. Never mutated by generating a manifest. */
@@ -310,7 +317,12 @@ export function parseManifestDoc(input: unknown): BagManifestDoc {
 
       return {
         id: String(m.id ?? uid("bm")),
-        title: sanitizeLine(m.title, LIMITS.title) || `Order ${i + 1}`,
+        // `title` is read as a fallback so manifests saved before the order
+        // number replaced it keep their heading.
+        orderNumber:
+          sanitizeLine(m.orderNumber, LIMITS.title) ||
+          sanitizeLine(m.title, LIMITS.title) ||
+          `Order ${i + 1}`,
         containerNumber: normalizeContainerNumber(m.containerNumber),
         items,
         target,
@@ -344,15 +356,18 @@ export function saveManifests(doc: BagManifestDoc): void {
   writeLocal(MANIFESTS_KEY, JSON.stringify(doc));
 }
 
-/** Build a new manifest from an imported order. */
+/**
+ * Build a new manifest from an imported order. The imported sheet's heading is
+ * used as the starting order number, since that is usually what it is.
+ */
 export function createManifest(
-  title: string,
+  orderNumber: string,
   source: Array<{ name?: unknown; qty?: unknown }>,
   containerNumber = "",
 ): BagManifest {
   return {
     id: uid("bm"),
-    title: sanitizeLine(title, LIMITS.title) || "Order",
+    orderNumber: sanitizeLine(orderNumber, LIMITS.title) || "Order",
     containerNumber: normalizeContainerNumber(containerNumber),
     items: toBagItems(source),
     target: null,
@@ -363,15 +378,17 @@ export function createManifest(
   };
 }
 
-/** `<Order Title> - <Container Number> - Bags.<ext>` */
+/** `<Order Number> - <Container Number> - Bags.<ext>` */
 export function manifestFilename(
-  title: string,
+  orderNumber: string,
   containerNumber: string,
   ext: string,
 ): string {
   const safe = (s: string) => s.replace(/[^\w\d\- ]+/g, "").trim();
-  const parts = [safe(title) || "Order", safe(containerNumber), "Bags"].filter(
-    (p) => p !== "",
-  );
+  const parts = [
+    safe(orderNumber) || "Order",
+    safe(containerNumber),
+    "Bags",
+  ].filter((p) => p !== "");
   return `${parts.join(" - ")}.${ext}`;
 }

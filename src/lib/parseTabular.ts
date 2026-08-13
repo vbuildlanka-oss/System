@@ -88,6 +88,10 @@ function isBlankRow(row: Cell[]): boolean {
   return !row.some((c) => cellText(c) !== "");
 }
 
+/** Heading lines that label a value rather than titling the sheet. */
+const LABELLED_HEADING_RE =
+  /^(container\s*(no\.?|number)|order\s*(no\.?|number)|ref(erence)?\s*(no\.?|number)?)\s*:/i;
+
 const NAME_RE = /^(item\s*name|item|description|product)$/i;
 const QTY_RE = /^(quantity|qty|bags|no\.?\s*of\s*bags)$/i;
 const PER_BAG_RE = /^(per\s*bag|price\s*per\s*bag|unit\s*price|rate)$/i;
@@ -159,10 +163,12 @@ export function parseTabularOrder(
   for (let r = 0; r < Math.max(cols.index, 0); r += 1) {
     const values = rows[r].map(cellText).filter((t) => t !== "");
     const distinct = Array.from(new Set(values));
-    if (distinct.length === 1) {
-      title = distinct[0];
-      break;
-    }
+    if (distinct.length !== 1) continue;
+    // Skip labelled heading lines such as "Container Number: GAOU7441740";
+    // they describe the shipment, they are not the sheet's heading.
+    if (LABELLED_HEADING_RE.test(distinct[0])) continue;
+    title = distinct[0];
+    break;
   }
   if (!title) title = fallbackTitle;
 

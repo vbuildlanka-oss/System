@@ -129,7 +129,7 @@ export default function BagManifestsPage() {
         const manifest = createManifest(parsed.title, parsed.items);
         addManifest(manifest);
         setNotice(
-          `Loaded "${manifest.title}" - ${manifest.items.length} items, ${sumQty(manifest.items)} bags. Pricing was dropped.`,
+          `Loaded "${manifest.orderNumber}" - ${manifest.items.length} items, ${sumQty(manifest.items)} bags. Pricing was dropped.`,
         );
       } catch (e) {
         setError(e instanceof Error ? e.message : "Import failed.");
@@ -171,7 +171,7 @@ export default function BagManifestsPage() {
       );
       addManifest(manifest);
       setNotice(
-        `Pulled "${manifest.title}" from the Order Editor - ${manifest.items.length} items, ${sumQty(manifest.items)} bags.`,
+        `Pulled "${manifest.orderNumber}" from the Order Editor - ${manifest.items.length} items, ${sumQty(manifest.items)} bags.`,
       );
     } catch {
       setError("Could not read the Order Editor sheet.");
@@ -235,7 +235,7 @@ export default function BagManifestsPage() {
 
   const removeManifest = useCallback(() => {
     if (!active || !doc) return;
-    if (!window.confirm(`Remove the manifest for "${active.title}"?`)) return;
+    if (!window.confirm(`Remove the manifest for "${active.orderNumber}"?`)) return;
     persist({
       ...doc,
       manifests: doc.manifests.filter((m) => m.id !== active.id),
@@ -261,7 +261,7 @@ export default function BagManifestsPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            title: active.title,
+            orderNumber: active.orderNumber,
             containerNumber: container.value,
             format,
             items: resolved.items.map((i) => ({ name: i.name, qty: i.qty })),
@@ -275,7 +275,7 @@ export default function BagManifestsPage() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = manifestFilename(active.title, container.value, format);
+        a.download = manifestFilename(active.orderNumber, container.value, format);
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -300,7 +300,14 @@ export default function BagManifestsPage() {
   }, [resolved, search]);
 
   const originalTotal = active ? sumQty(active.items) : 0;
-  const canExport = Boolean(container?.ok) && (resolved?.items.length ?? 0) > 0;
+  const hasOrderNumber = (active?.orderNumber ?? "").trim() !== "";
+  /** A gentle nudge only - any order number is accepted. */
+  const orderNumberLooksOdd =
+    hasOrderNumber && !/\d\s*$/.test((active?.orderNumber ?? "").trim());
+  const canExport =
+    Boolean(container?.ok) &&
+    hasOrderNumber &&
+    (resolved?.items.length ?? 0) > 0;
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-8 sm:py-12">
@@ -426,7 +433,7 @@ export default function BagManifestsPage() {
                             isActive ? "text-brand-800" : "text-gray-800",
                           )}
                         >
-                          {m.title}
+                          {m.orderNumber}
                         </span>
                         <span className="block truncate text-xs text-gray-500">
                           {m.containerNumber || "no container"} ·{" "}
@@ -476,19 +483,41 @@ export default function BagManifestsPage() {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <label
-                      htmlFor="bm-title"
+                      htmlFor="bm-order-no"
                       className="text-[11px] font-medium uppercase tracking-wide text-gray-500"
                     >
-                      Order title
+                      Order number
                     </label>
                     <input
-                      id="bm-title"
-                      value={active.title}
+                      id="bm-order-no"
+                      value={active.orderNumber}
                       onChange={(e) =>
-                        updateManifest(active.id, { title: e.target.value })
+                        updateManifest(active.id, {
+                          orderNumber: e.target.value,
+                        })
                       }
-                      className="mt-1 w-full rounded-lg border border-transparent bg-transparent px-0 py-1 text-xl font-bold text-gray-900 outline-none transition focus:border-gray-300 focus:bg-gray-50 focus:px-3"
+                      placeholder="Sri Lanka 01"
+                      className={cn(
+                        "mt-1 w-full rounded-lg border bg-transparent px-0 py-1 text-xl font-bold text-gray-900 outline-none transition focus:border-gray-300 focus:bg-gray-50 focus:px-3",
+                        active.orderNumber.trim() === ""
+                          ? "border-amber-300 bg-amber-50 px-3"
+                          : "border-transparent",
+                      )}
                     />
+                    <p
+                      className={cn(
+                        "mt-1 text-xs",
+                        active.orderNumber.trim() === ""
+                          ? "text-amber-700"
+                          : "text-gray-500",
+                      )}
+                    >
+                      {active.orderNumber.trim() === ""
+                        ? "Required - this is the heading on the manifest. For example Sri Lanka 01."
+                        : orderNumberLooksOdd
+                          ? "Usually ends with a number, for example Sri Lanka 01."
+                          : "The heading on every page of the manifest."}
+                    </p>
                   </div>
                   <button
                     onClick={removeManifest}

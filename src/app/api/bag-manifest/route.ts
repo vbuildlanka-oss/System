@@ -15,7 +15,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 interface ManifestBody {
-  title?: unknown;
+  orderNumber?: unknown;
   containerNumber?: unknown;
   items?: unknown;
   format?: unknown;
@@ -34,8 +34,17 @@ export async function POST(req: NextRequest) {
     const body = (await req.json()) as ManifestBody;
 
     const format = body.format === "xlsx" ? "xlsx" : "pdf";
-    const title = sanitizeLine(body.title, LIMITS.title) || "Order";
+    const orderNumber = sanitizeLine(body.orderNumber, LIMITS.title);
     const subtitle = sanitizeLine(body.subtitle, LIMITS.subtitle) || undefined;
+
+    // The order number is the headline of the document, so an empty one would
+    // leave the manifest with no heading at all.
+    if (orderNumber === "") {
+      return NextResponse.json(
+        { error: "An order number is required, for example Sri Lanka 01." },
+        { status: 400 },
+      );
+    }
 
     // A manifest without its container number is not much use to a shipper, so
     // the format is enforced here as well as in the page.
@@ -70,11 +79,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const filename = manifestFilename(title, container.value, format);
+    const filename = manifestFilename(orderNumber, container.value, format);
 
     if (format === "xlsx") {
       const xlsx = await buildManifestXlsx({
-        title,
+        orderNumber,
         containerNumber: container.value,
         items,
       });
@@ -90,7 +99,7 @@ export async function POST(req: NextRequest) {
     }
 
     const pdf = await renderManifestPdf({
-      title,
+      orderNumber,
       containerNumber: container.value,
       items,
       total: sumQty(items),

@@ -6,7 +6,7 @@ import type { BagItem } from "./bagManifest";
  *
  * Layout is fixed so the Total formula is predictable:
  *
- *   row 1          order title
+ *   row 1          the order number - the headline of the document
  *   row 2          Container Number: <number>
  *   row 3          Item Name | Quantity
  *   row 4 .. n+3   the items
@@ -17,11 +17,14 @@ import type { BagItem } from "./bagManifest";
  * the rows above it.
  */
 
-/** First row holding data: title, container and header occupy rows 1-3. */
+/**
+ * First row holding data: the order number, container number and column header
+ * occupy rows 1-3.
+ */
 export const DATA_START_ROW = 4;
 
 export interface ManifestXlsxData {
-  title: string;
+  orderNumber: string;
   containerNumber: string;
   items: BagItem[];
 }
@@ -48,13 +51,13 @@ export async function buildManifestXlsx(
     { key: "qty", width: 14 },
   ];
 
-  // Row 1 - order title
+  // Row 1 - the order number, as the headline
   sheet.mergeCells("A1:B1");
-  const titleCell = sheet.getCell("A1");
-  titleCell.value = data.title;
-  titleCell.font = { bold: true, size: 14 };
-  titleCell.alignment = { vertical: "middle" };
-  sheet.getRow(1).height = 22;
+  const headingCell = sheet.getCell("A1");
+  headingCell.value = data.orderNumber;
+  headingCell.font = { bold: true, size: 16 };
+  headingCell.alignment = { vertical: "middle" };
+  sheet.getRow(1).height = 26;
 
   // Row 2 - container number
   sheet.mergeCells("A2:B2");

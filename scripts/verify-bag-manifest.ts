@@ -81,7 +81,7 @@ async function readXlsx(buf: Buffer) {
   }
 
   return {
-    title: String(ws.getCell("A1").value ?? ""),
+    orderNumber: String(ws.getCell("A1").value ?? ""),
     containerLine: String(ws.getCell("A2").value ?? ""),
     header: [
       String(ws.getCell("A3").value ?? ""),
@@ -158,7 +158,10 @@ async function pdfText(buf: Buffer): Promise<string> {
   section("Pricing is stripped at import");
 
   const m3 = createManifest(order3.title, order3.items, CONTAINER);
-  check(m3.title === "Sri Lanka Order 3 2026", `title kept: "${m3.title}"`);
+  check(
+    m3.orderNumber === "Sri Lanka Order 3 2026",
+    `the imported heading becomes the order number: "${m3.orderNumber}"`,
+  );
   check(m3.containerNumber === CONTAINER, "container number stored on the order");
   check(
     m3.items.length === 85 && sumQty(m3.items) === 733,
@@ -294,8 +297,8 @@ async function pdfText(buf: Buffer): Promise<string> {
     515,
     43,
   );
-  check(resolveManifest(mA).total === 520, `${mA.title} totals 520`);
-  check(resolveManifest(mB).total === 515, `${mB.title} totals 515`);
+  check(resolveManifest(mA).total === 520, `${mA.orderNumber} totals 520`);
+  check(resolveManifest(mB).total === 515, `${mB.orderNumber} totals 515`);
   check(
     mA.containerNumber !== mB.containerNumber,
     "each order carries its own container number",
@@ -306,14 +309,17 @@ async function pdfText(buf: Buffer): Promise<string> {
 
   const rA = resolveManifest(mA);
   const xlsxBuf = await buildManifestXlsx({
-    title: mA.title,
+    orderNumber: mA.orderNumber,
     containerNumber: mA.containerNumber,
     items: rA.items,
   });
   writeFileSync(".verify/manifest.xlsx", xlsxBuf);
   const sheet = await readXlsx(xlsxBuf);
 
-  check(sheet.title === mA.title, `row 1 is the order title ("${sheet.title}")`);
+  check(
+    sheet.orderNumber === mA.orderNumber,
+    `row 1 is the order number ("${sheet.orderNumber}")`,
+  );
   check(
     sheet.containerLine === `Container Number: ${CONTAINER}`,
     `row 2 is "${sheet.containerLine}"`,
@@ -358,7 +364,7 @@ async function pdfText(buf: Buffer): Promise<string> {
   section("PDF export");
 
   const pdfBuf = await renderManifestPdf({
-    title: mA.title,
+    orderNumber: mA.orderNumber,
     containerNumber: mA.containerNumber,
     items: rA.items,
     total: rA.total,
@@ -366,7 +372,7 @@ async function pdfText(buf: Buffer): Promise<string> {
   writeFileSync(".verify/manifest.pdf", pdfBuf);
   const text = await pdfText(pdfBuf);
 
-  check(text.includes(mA.title), "heading line 1 is the order title");
+  check(text.includes(mA.orderNumber), "heading line 1 is the order number");
   check(
     text.includes(`Container Number: ${CONTAINER}`),
     "heading line 2 is the container number",
@@ -389,6 +395,11 @@ async function pdfText(buf: Buffer): Promise<string> {
   check(
     headerCount === pages,
     `the table header repeats on each of the ${pages} pages (found ${headerCount})`,
+  );
+  const headingCount = text.split(mA.orderNumber).length - 1;
+  check(
+    headingCount === pages,
+    `the order number heads every one of the ${pages} pages (found ${headingCount})`,
   );
   const containerCount = text.split("Container Number:").length - 1;
   check(
@@ -418,12 +429,12 @@ async function pdfText(buf: Buffer): Promise<string> {
   check(
     manifestFilename("Sri Lanka Order 3 2026", CONTAINER, "xlsx") ===
       "Sri Lanka Order 3 2026 - GAOU7441740 - Bags.xlsx",
-    "xlsx filename matches the required format",
+    "xlsx filename uses the order number",
   );
   check(
     manifestFilename("Sri Lanka Order 3 2026", CONTAINER, "pdf") ===
       "Sri Lanka Order 3 2026 - GAOU7441740 - Bags.pdf",
-    "pdf filename matches the required format",
+    "pdf filename uses the order number",
   );
   check(
     !manifestFilename('Order"/\\:*?<>|', CONTAINER, "pdf").match(/["/\\:*?<>|]/),
@@ -457,8 +468,8 @@ async function pdfText(buf: Buffer): Promise<string> {
     `an exported manifest re-imports as 85 items / 520 bags (got ${reimported.items.length} / ${reimported.totalQty})`,
   );
   check(
-    reimported.title === mA.title,
-    `the re-imported title is "${reimported.title}"`,
+    reimported.title === mA.orderNumber,
+    `an exported manifest re-imports its order number as the heading ("${reimported.title}")`,
   );
 
   /* ------------------------------ API route ------------------------------ */
@@ -466,7 +477,7 @@ async function pdfText(buf: Buffer): Promise<string> {
 
   const apiXlsx = await manifestPost(
     jsonReq({
-      title: mA.title,
+      orderNumber: mA.orderNumber,
       containerNumber: CONTAINER,
       format: "xlsx",
       items: rA.items,
@@ -495,7 +506,7 @@ async function pdfText(buf: Buffer): Promise<string> {
 
   const apiPdf = await manifestPost(
     jsonReq({
-      title: mA.title,
+      orderNumber: mA.orderNumber,
       containerNumber: CONTAINER,
       format: "pdf",
       items: rA.items,
@@ -528,7 +539,7 @@ async function pdfText(buf: Buffer): Promise<string> {
   ] as Array<[string, string]>) {
     const res = await manifestPost(
       jsonReq({
-        title: "T",
+        orderNumber: "Sri Lanka 01",
         containerNumber: container,
         format: "pdf",
         items: rA.items.slice(0, 3),
@@ -538,7 +549,7 @@ async function pdfText(buf: Buffer): Promise<string> {
   }
   const lower = await manifestPost(
     jsonReq({
-      title: "T",
+      orderNumber: "Sri Lanka 01",
       containerNumber: "gaou-744174-0",
       format: "pdf",
       items: rA.items.slice(0, 3),
@@ -550,16 +561,60 @@ async function pdfText(buf: Buffer): Promise<string> {
     "a lower case container number is accepted and upper-cased in the filename",
   );
 
+  // The order number is the heading, so a manifest cannot go out without one.
+  for (const [orderNumber, why] of [
+    ["", "a missing order number"],
+    ["   ", "a whitespace-only order number"],
+  ] as Array<[string, string]>) {
+    const res = await manifestPost(
+      jsonReq({
+        orderNumber,
+        containerNumber: CONTAINER,
+        format: "pdf",
+        items: rA.items.slice(0, 3),
+      }),
+    );
+    check(res.status === 400, `${why} is refused with 400 (got ${res.status})`);
+  }
+  const sriLanka01 = await manifestPost(
+    jsonReq({
+      orderNumber: "Sri Lanka 01",
+      containerNumber: CONTAINER,
+      format: "xlsx",
+      items: rA.items.slice(0, 3),
+    }),
+  );
+  check(
+    sriLanka01.status === 200 &&
+      (sriLanka01.headers.get("content-disposition") ?? "").includes(
+        'filename="Sri Lanka 01 - GAOU7441740 - Bags.xlsx"',
+      ),
+    `the "Sri Lanka 01" format works end to end (${sriLanka01.headers.get("content-disposition")})`,
+  );
+  const sriLankaSheet = await readXlsx(
+    Buffer.from(await sriLanka01.arrayBuffer()),
+  );
+  check(
+    sriLankaSheet.orderNumber === "Sri Lanka 01",
+    `row 1 of that sheet reads "${sriLankaSheet.orderNumber}"`,
+  );
+
   for (const [body, why] of [
-    [{ title: "T", containerNumber: CONTAINER, items: [] }, "an empty item list"],
-    [{ title: "T", containerNumber: CONTAINER }, "a missing item list"],
     [
-      { title: "T", containerNumber: CONTAINER, items: "nope" },
+      { orderNumber: "Sri Lanka 01", containerNumber: CONTAINER, items: [] },
+      "an empty item list",
+    ],
+    [
+      { orderNumber: "Sri Lanka 01", containerNumber: CONTAINER },
+      "a missing item list",
+    ],
+    [
+      { orderNumber: "Sri Lanka 01", containerNumber: CONTAINER, items: "nope" },
       "items that are not a list",
     ],
     [
       {
-        title: "T",
+        orderNumber: "Sri Lanka 01",
         containerNumber: CONTAINER,
         items: Array.from({ length: 2001 }, () => ({ name: "X", qty: 1 })),
       },
@@ -582,7 +637,7 @@ async function pdfText(buf: Buffer): Promise<string> {
   // A price smuggled into the payload must simply be ignored.
   const sneaky = await manifestPost(
     jsonReq({
-      title: "Sneaky",
+      orderNumber: "Sri Lanka 01",
       containerNumber: CONTAINER,
       format: "xlsx",
       items: [{ name: "Blanket", qty: 3, perBag: 20000, total: 60000 }],

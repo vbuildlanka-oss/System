@@ -39,7 +39,7 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
   },
   title: {
-    fontSize: 18,
+    fontSize: 21,
     fontFamily: "Helvetica-Bold",
     marginTop: 6,
   },
@@ -99,7 +99,8 @@ const styles = StyleSheet.create({
 });
 
 export interface ManifestPdfData {
-  title: string;
+  /** The headline of the document. */
+  orderNumber: string;
   containerNumber: string;
   items: BagItem[];
   total: number;
@@ -112,12 +113,12 @@ function ManifestDocument({ data }: { data: ManifestPdfData }) {
       author="BaleBook"
       creator="BaleBook"
       producer="BaleBook"
-      title={data.title}
+      title={data.orderNumber}
     >
       <Page size="A4" style={styles.page} wrap>
         <View style={styles.header} fixed>
           <Text style={styles.brand}>BALEBOOK</Text>
-          <Text style={styles.title}>{data.title}</Text>
+          <Text style={styles.title}>{data.orderNumber}</Text>
           <Text style={styles.container}>
             Container Number: {data.containerNumber}
           </Text>
