@@ -30,6 +30,11 @@ the recalculated table, and download a clean, buyer-ready price list PDF.
 Upload a sheet, edit it as bags sell, then download the updated PDF. Use this to
 keep a live sheet as customers buy.
 
+- **Several files open at once.** Opening a file adds a tab rather than replacing
+  what is already there. Each tab keeps its own rows, sales, buyer and reference,
+  shows its bag count, and can be closed on its own. A sheet opened from a file
+  takes its name from the file name (see the order number note below).
+
 - **Edit any value** inline: item name, quantity, per-bag price, and total
 - **Total is auto-calculated** (Qty x Per Bag). Type into the Total cell to
   override it — the row is flagged amber and a reset arrow restores the
@@ -108,10 +113,22 @@ and bag counts. No pricing anywhere.
 What each buyer has asked for, and whether you can fill it from the stockpile
 right now.
 
-- **Upload their list** as a PDF, CSV or XLSX, or type it in. A plain list of
-  items and quantities works, and so does a priced order sheet — prices are
-  ignored. Item names and quantities stay editable in place, so anything read
-  wrongly from a file can be corrected.
+- **Pick items rather than typing them.** Uploaded container files and the
+  stockpile form one searchable catalogue showing available bags, the file each
+  item came from, and its price. Each row has a bags box and an Add button;
+  picking something already on the list raises that line instead of duplicating
+  it. Anything not in a file can still be typed in by hand.
+- **Upload their list** as a PDF, CSV or XLSX. A plain list of items and
+  quantities works, and so does a priced order sheet. Names, quantities and
+  prices stay editable in place, so anything read wrongly from a file can be
+  corrected.
+- **Pricing.** Each line has a price per bag, pre-filled from the file it was
+  picked from where that file had prices. Line and grand totals are derived, so
+  they cannot drift from the rows. Order value, supplied value and still to
+  invoice are all shown, and a line with no price yet is flagged so a part-priced
+  total is not mistaken for the whole order.
+- **Download PDF** — buyer, phone, items with wanted / supplied / to go / per bag
+  / total, and a grand total. Unpriced lines print as a dash.
 - One list per buyer, each line holding the item, bags wanted, and bags supplied
   so far. **Outstanding is always derived** from those two, so a line cannot
   disagree with itself.
