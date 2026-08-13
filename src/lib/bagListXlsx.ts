@@ -1,0 +1,105 @@
+import ExcelJS from "exceljs";
+import type { BagItem } from "./bagList";
+
+/**
+ * The spreadsheet version of a bag list.
+ *
+ * Layout is fixed so the Total formula is predictable:
+ *
+ *   row 1          title
+ *   row 2          Item Name | Quantity
+ *   row 3 .. n+2   the items
+ *   row n+3        Total     | =SUM(B3:B{n+2})
+ *
+ * The total is a live formula rather than a number. If someone adjusts a
+ * quantity in the sheet, the total follows instead of silently disagreeing
+ * with the rows above it.
+ */
+
+/** First row holding data. Row 1 is the title, row 2 the header. */
+export const DATA_START_ROW = 3;
+
+export interface BagListXlsxData {
+  title: string;
+  items: BagItem[];
+}
+
+/** The formula placed in the Total cell, e.g. "SUM(B3:B87)". */
+export function totalFormula(itemCount: number): string {
+  const first = DATA_START_ROW;
+  const last = DATA_START_ROW + Math.max(itemCount, 1) - 1;
+  return `SUM(B${first}:B${last})`;
+}
+
+export async function buildBagListXlsx(
+  data: BagListXlsxData,
+): Promise<Buffer> {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "BaleBook";
+  workbook.created = new Date();
+
+  const sheet = workbook.addWorksheet("Bag List", {
+    views: [{ state: "frozen", ySplit: 2 }],
+  });
+  sheet.columns = [
+    { key: "name", width: 46 },
+    { key: "qty", width: 14 },
+  ];
+
+  // Row 1 - title
+  sheet.mergeCells("A1:B1");
+  const titleCell = sheet.getCell("A1");
+  titleCell.value = data.title;
+  titleCell.font = { bold: true, size: 14 };
+  titleCell.alignment = { vertical: "middle" };
+  sheet.getRow(1).height = 22;
+
+  // Row 2 - header
+  const header = sheet.getRow(2);
+  header.values = ["Item Name", "Quantity"];
+  header.font = { bold: true, color: { argb: "FFFFFFFF" } };
+  header.alignment = { vertical: "middle" };
+  header.height = 18;
+  for (const ref of ["A2", "B2"]) {
+    const cell = sheet.getCell(ref);
+    cell.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF1F2937" },
+    };
+  }
+  sheet.getCell("B2").alignment = { horizontal: "right", vertical: "middle" };
+
+  // Rows 3.. - the items
+  data.items.forEach((item, i) => {
+    const row = sheet.getRow(DATA_START_ROW + i);
+    row.getCell(1).value = item.name;
+    const qty = row.getCell(2);
+    qty.value = item.qty;
+    qty.numFmt = "0";
+    qty.alignment = { horizontal: "right" };
+  });
+
+  // Final row - Total, as a live SUM over the quantity column
+  const totalRowNumber = DATA_START_ROW + data.items.length;
+  const totalRow = sheet.getRow(totalRowNumber);
+  totalRow.getCell(1).value = "Total";
+  const totalCell = totalRow.getCell(2);
+  totalCell.value = { formula: totalFormula(data.items.length) };
+  totalCell.numFmt = "0";
+  totalCell.alignment = { horizontal: "right" };
+  totalRow.font = { bold: true };
+  for (const col of [1, 2]) {
+    totalRow.getCell(col).border = {
+      top: { style: "thin", color: { argb: "FF4F46E5" } },
+    };
+    totalRow.getCell(col).fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFE0E7FF" },
+    };
+  }
+
+  const out = await workbook.xlsx.writeBuffer();
+  return Buffer.from(out);
+}
