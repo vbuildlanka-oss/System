@@ -474,6 +474,17 @@ function csvCell(value: string | number): string {
 }
 
 /**
+ * The name of an exported balance sheet. Dated, so a folder of them sorts into
+ * order on its own and one export never quietly overwrites another.
+ */
+export function balanceFilename(ext: string, on: Date = new Date()): string {
+  const day = Number.isNaN(on.getTime())
+    ? new Date().toISOString().slice(0, 10)
+    : on.toISOString().slice(0, 10);
+  return `Balance Sheet ${day}.${ext.replace(/[^\w]+/g, "")}`;
+}
+
+/**
  * One CSV holding both halves of the sheet, then the summary, so it opens as a
  * readable statement rather than needing two files stitched together.
  */

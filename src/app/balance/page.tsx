@@ -16,10 +16,13 @@ import {
   Receipt,
   Users,
   Container as ContainerIcon,
+  Loader2,
+  Sheet as SheetIcon,
 } from "lucide-react";
 import {
   addExpense,
   addTurnover,
+  balanceFilename,
   balanceToCsv,
   balanceTotals,
   byContainer,
@@ -49,6 +52,7 @@ export default function BalancePage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [building, setBuilding] = useState(false);
   const jsonRef = useRef<HTMLInputElement>(null);
 
   // Turnover form
@@ -223,9 +227,47 @@ export default function BalancePage() {
     }
     downloadBlob(
       new Blob([balanceToCsv(sheet)], { type: "text/csv;charset=utf-8" }),
-      `Balance sheet ${new Date().toISOString().slice(0, 10)}.csv`,
+      balanceFilename("csv"),
     );
     setNotice("CSV exported - entries, then the summary and breakdowns.");
+  }, [sheet, downloadBlob]);
+
+  /**
+   * The workbook is built on the server, because ExcelJS is far too heavy to
+   * ship to the browser for a button that is pressed now and then.
+   */
+  const exportExcel = useCallback(async () => {
+    if (!sheet || (sheet.expenses.length === 0 && sheet.turnover.length === 0)) {
+      setError("There is nothing to export yet.");
+      return;
+    }
+    setError(null);
+    setBuilding(true);
+    setNotice("Building the spreadsheet...");
+    try {
+      const res = await fetch("/api/balance-export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sheet),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(body?.error ?? "The spreadsheet could not be built.");
+      }
+      downloadBlob(await res.blob(), balanceFilename("xlsx"));
+      setNotice(
+        "Excel exported - 5 tabs, and every total is a live formula, so editing an amount updates the rest.",
+      );
+    } catch (err) {
+      setNotice(null);
+      setError(
+        err instanceof Error ? err.message : "The spreadsheet could not be built.",
+      );
+    } finally {
+      setBuilding(false);
+    }
   }, [sheet, downloadBlob]);
 
   /* -------------------------------- render -------------------------------- */
@@ -855,13 +897,32 @@ export default function BalancePage() {
         </button>
         <button
           onClick={exportCsv}
-          disabled={isEmpty}
-          className="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-white px-4 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-50 disabled:opacity-40"
+          disabled={isEmpty || building}
+          className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-40"
         >
           <FileSpreadsheet className="h-4 w-4" />
           Export CSV
         </button>
+        <button
+          onClick={exportExcel}
+          disabled={isEmpty || building}
+          title="A workbook of 5 tabs where every total is a live formula"
+          className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-40"
+        >
+          {building ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <SheetIcon className="h-4 w-4" />
+          )}
+          {building ? "Building..." : "Export Excel"}
+        </button>
       </div>
+      <p className="mt-2 text-right text-xs text-gray-400">
+        The Excel workbook has 5 tabs - Summary, Profit by Container, Expenses,
+        Turnover and By Partner. Amounts are typed on the Expenses and Turnover
+        tabs only; every other figure is a live formula over them, so editing an
+        amount in Excel updates the profit and the breakdowns.
+      </p>
 
       <footer className="mt-16 text-center text-xs text-gray-400">
         Built by Lathurshan

@@ -229,8 +229,31 @@ belongs to.
   container IDs are normalised to uppercase (`gaou 744174-0` → `GAOU7441740`) and
   a bad ISO 6346 check digit raises a warning without blocking you — it is a
   bookkeeping label, not an export.
-- **Exports** — a CSV holding both halves of the sheet, then the summary,
-  per-container and per-partner blocks, so it opens as a readable statement.
+- **Excel export** — a five-tab workbook, and every figure on it is a live
+  formula:
+
+  | Tab | What it holds |
+  |---|---|
+  | Summary | turnover, expenses split into attributed and overhead, net profit, margin, counts |
+  | Profit by Container | turnover, cost, profit and margin per container, then a labelled overhead row and a net total |
+  | Expenses | one row per expense — date, name, partner, container, amount, note |
+  | Turnover | one row per turnover entry |
+  | By Partner | spend, entry count and share for each partner |
+
+  Amounts are typed on the **Expenses** and **Turnover** tabs only. Everything
+  else is `SUMIF`, `COUNTIF` and arithmetic over those two tabs, so changing an
+  amount in Excel re-derives the summary, both profit scopes and the partner
+  breakdown. Re-tag an expense to a container in the spreadsheet and it moves out
+  of overhead and into that container's profit on recalculation. No total can
+  ever sit there disagreeing with the rows above it.
+
+  Entries are written oldest-first, so the workbook reads as a ledger even though
+  the page lists the newest entry at the top for typing. Money cells show losses
+  in red, dates are real dates, and the entry tabs come with filters on.
+  Every formula also carries a cached answer, so totals are visible in Google
+  Sheets, LibreOffice and mail preview panes that do not recalculate on open.
+- **CSV export** — the same sheet as one flat file: both halves, then the
+  summary, per-container and per-partner blocks.
 - **Storage**: one JSON document, autosaved in the browser and downloadable.
   Totals, profits and margins are always *calculated* from the entries, never
   stored, so a figure can never drift from the rows it came from.

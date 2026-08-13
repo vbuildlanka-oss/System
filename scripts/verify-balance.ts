@@ -11,9 +11,13 @@
  *  - the CSV carries both halves of the sheet plus the summary blocks
  */
 import { mkdirSync, writeFileSync } from "node:fs";
+import ExcelJS from "exceljs";
+import JSZip from "jszip";
+import { buildBalanceXlsx, totalRow } from "../src/lib/balanceXlsx";
 import {
   addExpense,
   addTurnover,
+  balanceFilename,
   balanceToCsv,
   balanceTotals,
   byContainer,
@@ -453,8 +457,402 @@ section("CSV export");
   writeFileSync(".verify/balance.json", JSON.stringify(sheet, null, 2));
 }
 
-if (failures > 0) {
-  console.error(`\n${failures} CHECK(S) FAILED`);
-  process.exit(1);
+/* --------------------------------- Excel ---------------------------------- */
+
+/** The rows a range like "E3:E6" covers. */
+function rangeRows(formula: string): [number, number] | null {
+  const m = /([A-Z]+)(\d+):([A-Z]+)(\d+)/.exec(formula);
+  if (!m) return null;
+  return [Number(m[2]), Number(m[4])];
 }
-console.log("\nALL BALANCE SHEET CHECKS PASSED");
+
+/**
+ * The cached answers a spreadsheet stores next to its formulas, read out of the
+ * file itself.
+ *
+ * This has to come from the raw XML rather than from ExcelJS's reader, because
+ * the reader quietly discards a cached result of 0 or "" - which are exactly the
+ * cases worth checking, since a missing cached value is what makes a total show
+ * up blank in Google Sheets, LibreOffice or a mail preview pane that never
+ * recalculates. jszip is already installed as an exceljs dependency.
+ *
+ * Tab order is Summary, Profit by Container, Expenses, Turnover, By Partner.
+ */
+async function cachedCells(
+  buffer: Buffer,
+  tab: number,
+): Promise<Map<string, { formula?: string; cached?: string }>> {
+  const zip = await JSZip.loadAsync(buffer);
+  const file = zip.file(`xl/worksheets/sheet${tab}.xml`);
+  if (!file) throw new Error(`sheet${tab}.xml is missing from the workbook`);
+  const xml = await file.async("string");
+
+  const out = new Map<string, { formula?: string; cached?: string }>();
+  const cell = /<c r="([A-Z]+\d+)"[^>]*>(?:<f>([^<]*)<\/f>)?(?:<v>([^<]*)<\/v>)?<\/c>/g;
+  let m = cell.exec(xml);
+  while (m !== null) {
+    out.set(m[1], { formula: m[2], cached: m[3] });
+    m = cell.exec(xml);
+  }
+  return out;
+}
+
+async function xlsxChecks() {
+  section("Excel workbook: structure");
+
+  const sheet = sample();
+  const totals = balanceTotals(sheet);
+  const buffer = await buildBalanceXlsx(sheet);
+
+  check(buffer.length > 5000, `a workbook is produced (${buffer.length} bytes)`);
+
+  const book = new ExcelJS.Workbook();
+  await book.xlsx.load(buffer as unknown as ArrayBuffer);
+
+  const names = book.worksheets.map((w) => w.name);
+  check(
+    names.join(" | ") === "Summary | Profit by Container | Expenses | Turnover | By Partner",
+    `five tabs, in reading order (${names.join(" | ")})`,
+  );
+
+  const sum = book.getWorksheet("Summary")!;
+  const con = book.getWorksheet("Profit by Container")!;
+  const ex = book.getWorksheet("Expenses")!;
+  const tv = book.getWorksheet("Turnover")!;
+  const pa = book.getWorksheet("By Partner")!;
+
+  /** A cell's formula, or "" if it holds a plain value. */
+  const f = (ws: ExcelJS.Worksheet, ref: string): string => {
+    const v = ws.getCell(ref).value as { formula?: string } | null;
+    return v && typeof v === "object" && typeof v.formula === "string" ? v.formula : "";
+  };
+  /** A formula cell's cached answer. */
+  const r = (ws: ExcelJS.Worksheet, ref: string): unknown => {
+    const v = ws.getCell(ref).value as { result?: unknown } | null;
+    return v && typeof v === "object" && "result" in v ? v.result : v;
+  };
+
+  section("Excel workbook: the entry tabs hold the typed amounts");
+  {
+    // 4 expenses -> rows 3..6, total on row 7. 2 turnover -> rows 3..4, total 5.
+    check(totalRow(4) === 7, `the expense total lands on row 7 (${totalRow(4)})`);
+    check(totalRow(2) === 5, `the turnover total lands on row 5 (${totalRow(2)})`);
+
+    check(ex.getCell("B3").value === "Customs duty", "an expense name is written out");
+    check(ex.getCell("E3").value === 150_000, "its amount is a real number, not text");
+    check(ex.getCell("C3").value === "Anton", "its partner is written out");
+    check(ex.getCell("D3").value === A, "a tagged expense carries its container");
+    const generalRow = [3, 4, 5, 6].find((n) => ex.getCell(`B${n}`).value === "Office rent");
+    check(
+      generalRow !== undefined && ex.getCell(`D${generalRow}`).value === "(general)",
+      "an untagged expense reads as (general) rather than an empty cell",
+    );
+    check(
+      ex.getCell("A3").value instanceof Date,
+      "dates are real dates, so Excel can sort and filter them",
+    );
+    check(
+      String(ex.getCell("E3").numFmt).includes("Rs"),
+      `amounts are formatted as money (${ex.getCell("E3").numFmt})`,
+    );
+    check(
+      String(ex.getCell("E3").numFmt).includes("Red"),
+      "and a negative shows red, so a loss is not missed",
+    );
+    check(ex.autoFilter !== undefined && ex.autoFilter !== null, "the expenses can be filtered");
+    check(tv.getCell("B3").value === A && tv.getCell("C3").value === 1_200_000, "turnover rows are written out");
+  }
+
+  section("Excel workbook: every total is a live formula");
+  {
+    const cases: Array<[string, ExcelJS.Worksheet, string, number]> = [
+      ["Expenses total", ex, "E7", totals.expenses],
+      ["Turnover total", tv, "C5", totals.turnover],
+      ["Summary turnover", sum, "B5", totals.turnover],
+      ["Summary expenses", sum, "B6", totals.expenses],
+      ["Summary tied to a container", sum, "B7", totals.attributedExpenses],
+      ["Summary general overhead", sum, "B8", totals.generalExpenses],
+      ["Summary net profit", sum, "B9", totals.netProfit],
+    ];
+    for (const entry of cases) {
+      const label = entry[0];
+      const cell = f(entry[1], entry[2]);
+      check(cell !== "", `${label} is a formula, not a typed number (${cell || "PLAIN VALUE"})`);
+      check(
+        r(entry[1], entry[2]) === entry[3],
+        `${label} also carries the right cached answer (${String(r(entry[1], entry[2]))})`,
+      );
+    }
+
+    check(
+      f(ex, "E7") === "SUM(E3:E6)",
+      `the expense total sums exactly the entry rows (${f(ex, "E7")})`,
+    );
+    check(
+      f(tv, "C5") === "SUM(C3:C4)",
+      `the turnover total sums exactly the entry rows (${f(tv, "C5")})`,
+    );
+    check(
+      f(sum, "B5").includes("'Turnover'!C5"),
+      `the summary points at the Turnover tab rather than repeating the number (${f(sum, "B5")})`,
+    );
+    check(
+      f(sum, "B10").startsWith("IF(B5=0"),
+      `margin guards against dividing by nothing (${f(sum, "B10")})`,
+    );
+    check(
+      Math.abs((r(sum, "B10") as number) - 0.72) < 1e-9,
+      `margin is cached as a fraction for the percent format (${String(r(sum, "B10"))})`,
+    );
+    check(
+      String(sum.getCell("B10").numFmt).includes("%"),
+      "and the margin cell is percent-formatted",
+    );
+  }
+
+  section("Excel workbook: profit per container is derived, and keeps its scope");
+  {
+    check(con.getCell("A3").value === A, "containers are listed");
+    check(con.getCell("A4").value === B, "both of them");
+
+    check(
+      f(con, "B3").startsWith("SUMIF('Turnover'!"),
+      `container turnover is a SUMIF over the Turnover tab (${f(con, "B3")})`,
+    );
+    check(
+      f(con, "C3").startsWith("SUMIF('Expenses'!"),
+      `container expenses are a SUMIF over the Expenses tab (${f(con, "C3")})`,
+    );
+    check(f(con, "D3") === "B3-C3", `profit is turnover less expenses (${f(con, "D3")})`);
+    check(r(con, "B3") === 1_200_000, "container A turnover is cached correctly");
+    check(r(con, "C3") === 400_000, "container A expenses exclude the general overhead");
+    check(r(con, "D3") === 800_000, "so container A profit is 800,000");
+
+    // Row 5 is the general overhead row, row 6 the net total.
+    check(
+      con.getCell("A5").value === "(general, not per container)",
+      `general overhead gets a labelled row of its own (${String(con.getCell("A5").value)})`,
+    );
+    check(
+      f(con, "C5").includes('"(general)"'),
+      `it is picked out by matching the (general) label (${f(con, "C5")})`,
+    );
+    check(r(con, "C5") === 60_000, "with the right amount");
+    check(con.getCell("B5").value === null || con.getCell("B5").value === undefined,
+      "and no turnover of its own");
+    check(r(con, "D5") === -60_000, "overhead shows as a loss on that row");
+
+    check(con.getCell("A6").value === "Total (net)", "the net total is labelled as such");
+    check(
+      f(con, "B6") === "SUM(B3:B5)" && f(con, "C6") === "SUM(C3:C5)",
+      `the total sweeps the containers and the overhead row (${f(con, "C6")})`,
+    );
+    check(
+      r(con, "D6") === totals.netProfit,
+      `so the total profit equals the net profit, overhead included (${String(r(con, "D6"))})`,
+    );
+    // The scope rule, expressed in the spreadsheet itself.
+    const perContainer = (r(con, "D3") as number) + (r(con, "D4") as number);
+    check(
+      perContainer - (r(con, "D6") as number) === totals.generalExpenses,
+      `container profits exceed the net by exactly the overhead (${perContainer - (r(con, "D6") as number)})`,
+    );
+  }
+
+  section("Excel workbook: partner breakdown is derived");
+  {
+    check(pa.getCell("A3").value === "Anton", "partners are listed, biggest first");
+    check(
+      f(pa, "B3").startsWith("SUMIF('Expenses'!"),
+      `partner spend is a SUMIF over the Expenses tab (${f(pa, "B3")})`,
+    );
+    check(
+      f(pa, "C3").startsWith("COUNTIF('Expenses'!"),
+      `the entry count is a COUNTIF (${f(pa, "C3")})`,
+    );
+    check(r(pa, "B3") === 400_000, "Anton's spend is cached correctly");
+    check(r(pa, "C3") === 2, "and his entry count");
+    check(
+      f(pa, "D3").includes("$B$5"),
+      `each share divides by the partner total (${f(pa, "D3")})`,
+    );
+    check(r(pa, "B5") === totals.expenses, "the partner total matches total expenses");
+    check(r(pa, "D5") === 1, "and the shares add up to 100%");
+  }
+
+  section("Excel workbook: no total can sit inside its own SUM");
+  {
+    // A circular reference makes Excel refuse to open the file, so this is
+    // checked on both a populated workbook and an empty one.
+    const sums: Array<[string, ExcelJS.Worksheet, string, number]> = [
+      ["the expense total", ex, "E7", 7],
+      ["the turnover total", tv, "C5", 5],
+      ["the container turnover total", con, "B6", 6],
+      ["the partner total", pa, "B5", 5],
+    ];
+    for (const entry of sums) {
+      const rows = rangeRows(f(entry[1], entry[2]));
+      check(
+        rows !== null && entry[3] > rows[1],
+        `${entry[0]} sums rows above itself only (${f(entry[1], entry[2])} on row ${entry[3]})`,
+      );
+    }
+  }
+
+  section("Excel workbook: entries read as a ledger, oldest first");
+  {
+    // The page lists newest first for typing; the workbook runs down the page in
+    // the order things happened.
+    const order = [3, 4, 5, 6].map((n) => String(ex.getCell(`B${n}`).value));
+    check(
+      order.join(" > ") === "Customs duty > Freight > Labour > Office rent",
+      `expenses are in the order they were entered (${order.join(" > ")})`,
+    );
+    const containersInOrder = [3, 4].map((n) => String(tv.getCell(`B${n}`).value));
+    check(
+      containersInOrder.join(" > ") === `${A} > ${B}`,
+      `turnover likewise (${containersInOrder.join(" > ")})`,
+    );
+    // Order must not be able to change a figure, since nothing matches on row
+    // position - so the totals are unchanged by the sort above.
+    check(r(ex, "E7") === totals.expenses, "and the ordering leaves the totals alone");
+  }
+
+  section("Excel workbook: every formula carries its own answer");
+  {
+    // Without a cached answer, a formula cell shows blank in Google Sheets,
+    // LibreOffice and most preview panes until they recalculate.
+    let formulaCells = 0;
+    let missing: string[] = [];
+    for (let tab = 1; tab <= 5; tab += 1) {
+      const cells = await cachedCells(buffer, tab);
+      const refs = Array.from(cells.keys());
+      for (const ref of refs) {
+        const entry = cells.get(ref)!;
+        if (entry.formula === undefined) continue;
+        formulaCells += 1;
+        if (entry.cached === undefined) missing.push(`sheet${tab}!${ref}`);
+      }
+    }
+    check(formulaCells >= 25, `the workbook is built out of formulas (${formulaCells} of them)`);
+    check(
+      missing.length === 0,
+      `every one carries a cached answer, so nothing shows blank before a recalculation (${missing.join(", ") || "none missing"})`,
+    );
+  }
+
+  section("Excel workbook: an empty sheet still opens");
+  {
+    // The awkward case: with no entries there is no row to sum, and a naive
+    // range would either be backwards or swallow the total cell itself.
+    const blank = await buildBalanceXlsx(emptyBalanceSheet());
+    const blankBook = new ExcelJS.Workbook();
+    await blankBook.xlsx.load(blank as unknown as ArrayBuffer);
+
+    const bex = blankBook.getWorksheet("Expenses")!;
+    const btv = blankBook.getWorksheet("Turnover")!;
+    check(blankBook.worksheets.length === 5, "all five tabs are still there");
+    check(totalRow(0) === 4, `the total drops to row 4, leaving a blank row (${totalRow(0)})`);
+
+    const exFormula = f(bex, "E4");
+    check(exFormula === "SUM(E3:E3)", `the range is a single blank row (${exFormula})`);
+    const rows = rangeRows(exFormula);
+    check(rows !== null && rows[0] <= rows[1], "and is not backwards");
+    check(rows !== null && rows[1] < 4, "and does not include the total cell itself");
+    check(f(btv, "C4") === "SUM(C3:C3)", `the turnover tab does the same (${f(btv, "C4")})`);
+    check(bex.autoFilter === undefined || bex.autoFilter === null,
+      "no filter is set over rows that do not exist");
+
+    // Read from the file, because a zero cached answer is exactly what a viewer
+    // that never recalculates has to fall back on.
+    const blankEx = await cachedCells(blank, 3);
+    check(blankEx.get("E4")?.cached === "0", `the total is cached as 0, not left blank (${String(blankEx.get("E4")?.cached)})`);
+
+    const blankSum = await cachedCells(blank, 1);
+    check(blankSum.get("B9")?.cached === "0", `net profit is cached as 0 rather than an error (${String(blankSum.get("B9")?.cached)})`);
+    check(
+      blankSum.get("B10")?.cached === "",
+      "and margin is cached as an empty string, so it shows blank rather than 0%",
+    );
+  }
+
+  section("Excel workbook: awkward content survives the trip");
+  {
+    let odd = emptyBalanceSheet();
+    odd = addTurnover(odd, createTurnover({ containerId: A, turnover: 100 }));
+    odd = addExpense(
+      odd,
+      // A quote in a name would break a formula if it were ever interpolated.
+      createExpense({ name: 'Duty, port "A"', partner: "O'Brien & Co", amount: 400, containerId: A }),
+    );
+    // An expense on a container that has earned nothing yet.
+    odd = addExpense(
+      odd,
+      createExpense({ name: "Storage", partner: "Anton", amount: 25, containerId: "TCLU1234567" }),
+    );
+
+    const buf = await buildBalanceXlsx(odd);
+    const oddBook = new ExcelJS.Workbook();
+    await oddBook.xlsx.load(buf as unknown as ArrayBuffer);
+    const oex = oddBook.getWorksheet("Expenses")!;
+    const ocon = oddBook.getWorksheet("Profit by Container")!;
+
+    const names = [3, 4].map((n) => String(oex.getCell(`B${n}`).value));
+    check(
+      names.includes('Duty, port "A"'),
+      `commas and quotes come through intact (${names.join(" / ")})`,
+    );
+    const partners = [3, 4].map((n) => String(oex.getCell(`C${n}`).value));
+    check(partners.includes("O'Brien & Co"), "an apostrophe and an ampersand survive");
+
+    const ids = [3, 4].map((n) => String(ocon.getCell(`A${n}`).value));
+    check(
+      ids.includes("TCLU1234567"),
+      `a container with cost but no turnover is still listed (${ids.join(" / ")})`,
+    );
+    const lossRow = ids.indexOf("TCLU1234567") + 3;
+    check(r(ocon, `D${lossRow}`) === -25, "and its loss so far");
+
+    const oddCon = await cachedCells(buf, 2);
+    check(
+      oddCon.get(`B${lossRow}`)?.cached === "0",
+      `with its turnover cached as 0 (${String(oddCon.get(`B${lossRow}`)?.cached)})`,
+    );
+    check(
+      oddCon.get(`E${lossRow}`)?.cached === "",
+      "and a blank margin rather than a division by zero",
+    );
+
+    const netProfit = balanceTotals(odd).netProfit;
+    check(
+      r(oddBook.getWorksheet("Summary")!, "B9") === netProfit,
+      `the summary agrees with the app (${String(r(oddBook.getWorksheet("Summary")!, "B9"))} vs ${netProfit})`,
+    );
+  }
+
+  section("Export filename");
+  {
+    const name = balanceFilename("xlsx", new Date("2026-08-09T10:00:00Z"));
+    check(name === "Balance Sheet 2026-08-09.xlsx", `dated and readable (${name})`);
+    check(
+      balanceFilename("csv", new Date("2026-08-09T10:00:00Z")) === "Balance Sheet 2026-08-09.csv",
+      "the CSV uses the same naming",
+    );
+    check(
+      !balanceFilename("xlsx").includes("undefined") &&
+        !Number.isNaN(Date.parse(balanceFilename("xlsx").slice(14, 24))),
+      "and defaults to today when no date is given",
+    );
+  }
+
+  mkdirSync(".verify", { recursive: true });
+  writeFileSync(".verify/Balance Sheet.xlsx", buffer);
+
+  if (failures > 0) {
+    console.error(`\n${failures} CHECK(S) FAILED`);
+    process.exit(1);
+  }
+  console.log("\nALL BALANCE SHEET CHECKS PASSED");
+}
+
+xlsxChecks();
