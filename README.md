@@ -103,7 +103,33 @@ and bag counts. No pricing anywhere.
   row 89       Total     | =SUM(B4:B88)
   ```
 
-## 4. Stockpile (`/stockpile`)
+## 4. Buyer Requests (`/requests`)
+
+What each buyer has asked for, and whether you can fill it from the stockpile
+right now.
+
+- **Upload their list** as a PDF, CSV or XLSX, or type it in. A plain list of
+  items and quantities works, and so does a priced order sheet — prices are
+  ignored. Item names and quantities stay editable in place, so anything read
+  wrongly from a file can be corrected.
+- One list per buyer, each line holding the item, bags wanted, and bags supplied
+  so far. **Outstanding is always derived** from those two, so a line cannot
+  disagree with itself.
+- **Live availability** against the stockpile, matched on the same normalised
+  name the stockpile uses — so `Anorak #2` on a buyer's list finds `Anorak 2` in
+  stock. Each line reads **in stock**, **part only**, **none**, or **supplied**.
+- **Supply from stock in one step**: the bags leave the stockpile (oldest batch
+  first) and are recorded against the request together, so the two can't drift
+  apart. The withdrawal is logged against the buyer's name. If the numbers don't
+  work it refuses before changing anything.
+- Supplied can never exceed what was asked for, or go below zero.
+- All lists live in one JSON document: autosaved in the browser, **saveable as a
+  file** to move between devices, plus a CSV with one row per requested line.
+
+Availability is a snapshot, not a reservation — two buyers wanting the same item
+will both see the same stock figure.
+
+## 5. Stockpile (`/stockpile`)
 
 When sales are slow, leftover bags don't disappear — they get set aside and
 mixed with leftovers from earlier orders. The stockpile is that carried-forward
@@ -180,6 +206,8 @@ npx tsx scripts/verify-buyer.ts      # buyers: phone formats, sanitising, PDF bl
 npx tsx scripts/verify-stockpile.ts  # stockpile: batches, FIFO, ageing, files
 npx tsx scripts/verify-api.ts        # API routes: every success and failure path
 npx tsx scripts/verify-bag-manifest.ts  # manifests: containers, reduction, exports
+npx tsx scripts/verify-refno.ts         # references: device tags, uniqueness
+npx tsx scripts/verify-request.ts       # buyer requests: matching, supplying, files
 ```
 
 ---
@@ -201,6 +229,8 @@ npx tsx scripts/verify-bag-manifest.ts  # manifests: containers, reduction, expo
 | CSV + XLSX order parsing | `src/lib/parseTabular.ts` |
 | Manifest download endpoint | `src/app/api/bag-manifest/route.ts` |
 | Manifest UI | `src/app/bag-manifests/page.tsx` |
+| Buyer requests + stock matching | `src/lib/buyerRequest.ts` |
+| Buyer requests UI | `src/app/requests/page.tsx` |
 | Render any PDF | `src/lib/buyerPdf.tsx` (`renderSheetPdf`) |
 | Upload / parse endpoint | `src/app/api/process/route.ts` |
 | Price list download endpoint | `src/app/api/generate/route.ts` |

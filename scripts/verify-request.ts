@@ -7,7 +7,10 @@
  *  - saving and reloading the file preserves everything, and rejects rubbish
  *  - CSV carries one row per requested line
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { parseOrderPdf } from "../src/lib/parseOrder";
+import { parseCsvOrder } from "../src/lib/parseTabular";
+import { renderManifestPdf } from "../src/lib/bagManifestPdf";
 import {
   createRequest,
   markSupplied,
@@ -303,43 +306,135 @@ check(
 doc = removeRequest(doc, fresh.id);
 check(doc.requests.length === 1, "a list can be removed");
 
-/* -------------------------------- the CSV -------------------------------- */
-section("CSV export");
+/* The remaining checks read files, so they run inside an async function. */
+async function fileChecks() {
+  /* ----------------------- importing a buyer's own list ---------------------- */
+  section("Importing a list from a file");
 
-stock = buildStock();
-const csvDoc = upsertRequest(emptyRequestDoc(), fresh);
-const csv = requestsToCsv(csvDoc.requests, stock);
-const rows = csv.trim().split("\n");
-check(rows[0].startsWith("Buyer,Phone,Item"), "there is a header row");
-check(
-  rows.length === 1 + fresh.items.length,
-  `one row per requested line (${rows.length - 1} for ${fresh.items.length} lines)`,
-);
-check(
-  csv.includes("Ahmad Trading"),
-  "the buyer appears on every row",
-);
-check(
-  csv.includes("mixed colours"),
-  "per-line notes are exported",
-);
-const scarfRow = rows.find((r) => r.includes("Cotton Scarf")) ?? "";
-check(
-  scarfRow.endsWith("0,mixed colours") || scarfRow.includes(",0,"),
-  `the in-stock column is filled in (${scarfRow})`,
-);
-const csvNoStock = requestsToCsv(csvDoc.requests);
-check(
-  csvNoStock.split("\n").length === rows.length,
-  "the CSV still works without a stockpile to compare against",
-);
+  // A buyer's list is usually just items and quantities, with no prices at all.
+  const plainList = await renderManifestPdf({
+    orderNumber: "Ahmad wants",
+    containerNumber: "GAOU7441740",
+    items: [
+      { name: "Blanket", qty: 12 },
+      { name: "Bed Sheet", qty: 4 },
+      { name: "Anorak 2", qty: 9 },
+    ],
+    total: 25,
+  });
+  const fromPdf = await parseOrderPdf(plainList);
+  check(
+    fromPdf.items.length === 3,
+    `a priceless PDF list yields 3 lines (got ${fromPdf.items.length})`,
+  );
+  check(
+    fromPdf.totalQty === 25,
+    `the quantities total 25 (got ${fromPdf.totalQty})`,
+  );
+  check(
+    fromPdf.items[2].name === "Anorak 2" && fromPdf.items[2].qty === 9,
+    `"Anorak 2" with 9 bags is read correctly rather than "Anorak" with 29 (got "${fromPdf.items[2].name}" ${fromPdf.items[2].qty})`,
+  );
+  check(
+    fromPdf.totalsMatch,
+    "the printed total confirms the reading",
+  );
+  check(
+    fromPdf.items.every((i) => i.perBag === 0),
+    "no price is invented for a list that had none",
+  );
 
-mkdirSync(".verify", { recursive: true });
-writeFileSync(".verify/requests.csv", csv);
-writeFileSync(".verify/requests.json", JSON.stringify(csvDoc, null, 2));
+  const asLines = toRequestItems(
+    fromPdf.items.map((i) => ({ name: i.name, qty: i.qty })),
+  );
+  check(
+    asLines.length === 3 && asLines.every((l) => l.supplied === 0),
+    "imported lines start with nothing supplied",
+  );
+  const importedRequest = createRequest(BUYER, asLines);
+  check(
+    requestTotals(importedRequest).requested === 25,
+    "the imported request asks for 25 bags",
+  );
+  const importedMatch = matchRequest(importedRequest, buildStock());
+  check(
+    importedMatch[2].item.name === "Anorak 2" &&
+      importedMatch[2].inStock === 6 &&
+      importedMatch[2].canSupply === 6 &&
+      importedMatch[2].status === "part",
+    `the imported "Anorak 2" line finds its 6 bags in stock against 9 wanted (${importedMatch[2].status})`,
+  );
+  check(
+    importedMatch[0].status === "ready" && importedMatch[1].status === "ready",
+    "the other imported lines are fully covered by stock",
+  );
 
-if (failures > 0) {
-  console.error(`\n${failures} CHECK(S) FAILED`);
-  process.exit(1);
+  // A priced order sheet must still import, ignoring the money entirely.
+  const priced = await parseOrderPdf(
+    readFileSync("sample-orders/Sri Lanka Order 3 2026 - Sheet1 (1).pdf"),
+  );
+  check(
+    priced.items.length === 85 && priced.totalQty === 733,
+    `a priced order sheet still reads as 85 lines / 733 bags (got ${priced.items.length} / ${priced.totalQty})`,
+  );
+  const fromPriced = createRequest(BUYER, priced.items);
+  check(
+    fromPriced.items.length === 85 &&
+      !JSON.stringify(fromPriced.items).includes("perBag"),
+    "importing a priced sheet keeps names and quantities only",
+  );
+
+  // A CSV of just two columns is the other common shape.
+  const csvList = parseCsvOrder(
+    ["Item Name,Quantity", "Blanket,12", "Cotton Scarf,5"].join("\n"),
+    "Ahmad list",
+  );
+  check(
+    csvList.items.length === 2 && csvList.totalQty === 17,
+    `a two-column CSV yields 2 lines / 17 bags (got ${csvList.items.length} / ${csvList.totalQty})`,
+  );
+
+  /* -------------------------------- the CSV -------------------------------- */
+  section("CSV export");
+
+  stock = buildStock();
+  const csvDoc = upsertRequest(emptyRequestDoc(), fresh);
+  const csv = requestsToCsv(csvDoc.requests, stock);
+  const rows = csv.trim().split("\n");
+  check(rows[0].startsWith("Buyer,Phone,Item"), "there is a header row");
+  check(
+    rows.length === 1 + fresh.items.length,
+    `one row per requested line (${rows.length - 1} for ${fresh.items.length} lines)`,
+  );
+  check(
+    csv.includes("Ahmad Trading"),
+    "the buyer appears on every row",
+  );
+  check(
+    csv.includes("mixed colours"),
+    "per-line notes are exported",
+  );
+  const scarfRow = rows.find((r) => r.includes("Cotton Scarf")) ?? "";
+  check(
+    scarfRow.endsWith("0,mixed colours") || scarfRow.includes(",0,"),
+    `the in-stock column is filled in (${scarfRow})`,
+  );
+  const csvNoStock = requestsToCsv(csvDoc.requests);
+  check(
+    csvNoStock.split("\n").length === rows.length,
+    "the CSV still works without a stockpile to compare against",
+  );
+
+  mkdirSync(".verify", { recursive: true });
+  writeFileSync(".verify/requests.csv", csv);
+  writeFileSync(".verify/requests.json", JSON.stringify(csvDoc, null, 2));
+
+  if (failures > 0) {
+    console.error(`\n${failures} CHECK(S) FAILED`);
+    process.exit(1);
+  }
+  console.log("\nALL REQUEST CHECKS PASSED");
+
 }
-console.log("\nALL REQUEST CHECKS PASSED");
+
+fileChecks();

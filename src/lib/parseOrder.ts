@@ -68,6 +68,144 @@ const TOTAL_RE = /^Total\s*(\d+)\s*Rs\s*([\d,]+(?:\.\d+)?)$/i;
 
 const HEADER_RE = /^item\s*name\b/i;
 
+/* ----------------------- quantity-only lists (no prices) ------------------ */
+
+/**
+ * A buyer's own list is usually just what they want and how many, with no
+ * prices: "Blanket 12". These rows are read only when no priced rows were
+ * found, so a normal order sheet is never interpreted this way.
+ */
+const QTY_TOTAL_RE = /^Total\s*(\d+)$/i;
+
+/** Lines that are furniture rather than items. */
+function isNoiseLine(line: string): boolean {
+  if (line.includes(":")) return true; // "Container Number: GAOU7441740"
+  if (/page\s*\d+\s*of\s*\d+/i.test(line)) return true;
+  if (/^(balebook|item\s*name|quantity|total)\b/i.test(line)) return true;
+  // The brand is rendered with wide letter spacing, arriving as "B A L E ...".
+  if (/^(?:[A-Za-z]\s){3,}[A-Za-z]\s*$/.test(line)) return true;
+  return false;
+}
+
+/**
+ * Ways to read "<name><qty>" when the two ran together.
+ *
+ * "Blanket12" is unambiguous enough, but "Anorak 29" could be Anorak 2 with 9
+ * bags or Anorak with 29. Every split of the trailing digits is offered, widest
+ * first because that is the common case, and the caller picks between them.
+ */
+function qtySplits(prefix: string): Array<{ name: string; qty: number }> {
+  const trimmedEnd = prefix.replace(/\s+$/, "");
+  const digits = trimmedEnd.match(/\d+$/)?.[0];
+  if (!digits) return [];
+
+  const out: Array<{ name: string; qty: number }> = [];
+  for (let take = digits.length; take >= 1; take -= 1) {
+    const qty = Number(digits.slice(digits.length - take));
+    if (qty <= 0) continue;
+    const name = trimmedEnd.slice(0, trimmedEnd.length - take).trim();
+    if (name === "") continue;
+    out.push({ name, qty });
+  }
+  return out;
+}
+
+/**
+ * Choose one split per line so the quantities add up to `target`.
+ *
+ * Depth-first over the alternatives in preference order, so when several
+ * readings are possible the most likely one wins. Failed (line, running total)
+ * pairs are remembered, which keeps this quick on real lists.
+ */
+function resolveToTotal(
+  options: Array<Array<{ name: string; qty: number }>>,
+  target: number,
+): Array<{ name: string; qty: number }> | null {
+  const failed = new Set<string>();
+
+  const walk = (
+    index: number,
+    running: number,
+    chosen: Array<{ name: string; qty: number }>,
+  ): Array<{ name: string; qty: number }> | null => {
+    if (running > target) return null;
+    if (index === options.length) return running === target ? chosen : null;
+
+    const key = `${index}:${running}`;
+    if (failed.has(key)) return null;
+
+    for (const option of options[index]) {
+      const result = walk(index + 1, running + option.qty, [...chosen, option]);
+      if (result) return result;
+    }
+    failed.add(key);
+    return null;
+  };
+
+  return walk(0, 0, []);
+}
+
+interface QtyListResult {
+  items: OrderItem[];
+  printedTotal: number | null;
+  resolved: boolean;
+}
+
+/** Read a list that has names and quantities but no prices. */
+function parseQuantityList(lines: string[]): QtyListResult {
+  const options: Array<Array<{ name: string; qty: number }>> = [];
+  let printedQty: number | null = null;
+
+  for (const line of lines) {
+    const total = line.match(QTY_TOTAL_RE);
+    if (total) {
+      printedQty = Number(total[1]);
+      continue;
+    }
+    if (isNoiseLine(line)) continue;
+
+    const splits = qtySplits(line);
+    if (splits.length > 0) options.push(splits);
+  }
+
+  if (options.length === 0) {
+    return { items: [], printedTotal: printedQty, resolved: false };
+  }
+
+  // Widest split for each line: right for most lists.
+  const greedy = options.map((o) => o[0]);
+  const greedyTotal = greedy.reduce((s, o) => s + o.qty, 0);
+
+  if (printedQty === null || greedyTotal === printedQty) {
+    return {
+      items: greedy.map((o) => ({ name: o.name, qty: o.qty, perBag: 0 })),
+      printedTotal: printedQty,
+      resolved: printedQty !== null,
+    };
+  }
+
+  // The printed total disagrees, so a name probably ended in a digit. Look for
+  // the reading that adds up. Bounded so a huge list cannot stall the request.
+  if (options.length <= 400 && printedQty <= 200_000) {
+    const fixed = resolveToTotal(options, printedQty);
+    if (fixed) {
+      return {
+        items: fixed.map((o) => ({ name: o.name, qty: o.qty, perBag: 0 })),
+        printedTotal: printedQty,
+        resolved: true,
+      };
+    }
+  }
+
+  // Nothing adds up: hand back the straightforward reading and let the caller
+  // report that the total does not match, rather than quietly inventing one.
+  return {
+    items: greedy.map((o) => ({ name: o.name, qty: o.qty, perBag: 0 })),
+    printedTotal: printedQty,
+    resolved: false,
+  };
+}
+
 /**
  * Split a "<name><qty>" prefix into its name and quantity, using the line
  * total and per-bag price to determine the true quantity.
@@ -149,6 +287,25 @@ export async function parseOrderPdf(buffer: Buffer): Promise<ParsedOrder> {
   }
 
   if (!title) title = "Order";
+
+  // No priced rows: this is probably a plain list of what someone wants, so
+  // read it as names and quantities instead.
+  if (items.length === 0) {
+    const list = parseQuantityList(rawLines);
+    if (list.items.length > 0) {
+      const listQty = list.items.reduce((s, i) => s + i.qty, 0);
+      return {
+        title,
+        items: list.items,
+        totalQty: listQty,
+        computedTotal: 0,
+        printedTotal: null,
+        // Only claim the totals agree when there was a printed total to agree
+        // with, and the readings could be made to match it.
+        totalsMatch: list.printedTotal === null ? true : list.resolved,
+      };
+    }
+  }
 
   let totalQty = 0;
   let computedTotal = 0;

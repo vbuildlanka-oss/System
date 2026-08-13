@@ -16,9 +16,12 @@ import {
   PackagePlus,
   Boxes,
   Minus,
+  UploadCloud,
+  Loader2,
 } from "lucide-react";
 import BuyerFields from "@/components/BuyerFields";
 import { EMPTY_BUYER, rememberBuyer, hasBuyerInfo, type Buyer } from "@/lib/buyer";
+import type { ParsedOrder } from "@/lib/types";
 import {
   createRequest,
   loadRequests,
@@ -67,6 +70,7 @@ export default function RequestsPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [importing, setImporting] = useState(false);
   const [buyerRefreshKey, setBuyerRefreshKey] = useState(0);
 
   // New-line form
@@ -75,6 +79,7 @@ export default function RequestsPage() {
   const [newNote, setNewNote] = useState("");
 
   const jsonRef = useRef<HTMLInputElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setDoc(loadRequests());
@@ -159,6 +164,87 @@ export default function RequestsPage() {
       save({ ...active, items: active.items.filter((i) => i.id !== itemId) });
     },
     [active, save],
+  );
+
+  /** Edit a line in place, so anything read wrongly from a file can be fixed. */
+  const updateLine = useCallback(
+    (itemId: string, patch: { name?: string; qty?: number }) => {
+      if (!active) return;
+      save({
+        ...active,
+        items: active.items.map((i) => {
+          if (i.id !== itemId) return i;
+          const qty =
+            patch.qty === undefined
+              ? i.qty
+              : Math.max(1, Math.floor(patch.qty) || 1);
+          return {
+            ...i,
+            name: patch.name === undefined ? i.name : patch.name,
+            qty,
+            // Lowering what they want must not leave more supplied than asked.
+            supplied: Math.min(i.supplied, qty),
+          };
+        }),
+      });
+    },
+    [active, save],
+  );
+
+  /**
+   * Import a buyer's list from a file. Works with a plain PDF list of items and
+   * quantities as well as a priced order sheet, CSV or spreadsheet.
+   */
+  const importFile = useCallback(
+    async (file: File) => {
+      setError(null);
+      setNotice(null);
+      setImporting(true);
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        const res = await fetch("/api/process", { method: "POST", body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Could not read that file.");
+
+        const parsed = data as ParsedOrder;
+        const lines = toRequestItems(
+          parsed.items.map((i) => ({ name: i.name, qty: i.qty })),
+        );
+        if (lines.length === 0) {
+          throw new Error("No items with quantities were found in that file.");
+        }
+
+        // Add to the open list, or start one named after the file's heading.
+        const base = doc ?? loadRequests();
+        const target =
+          active ??
+          createRequest(
+            { name: parsed.title || file.name.replace(/\.[^.]+$/, ""), phone: "" },
+            [],
+          );
+        const merged: BuyerRequest = {
+          ...target,
+          items: [...target.items, ...lines],
+        };
+        persist(upsertRequest(base, merged));
+        setActiveId(merged.id);
+
+        const bags = lines.reduce((s, l) => s + l.qty, 0);
+        setNotice(
+          `Imported ${lines.length} item(s), ${bags} bags from ${file.name}.` +
+            (parsed.totalsMatch
+              ? ""
+              : " The total on the file did not match the lines, so please check the quantities below."),
+        );
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Import failed.");
+      } finally {
+        setImporting(false);
+        if (fileRef.current) fileRef.current.value = "";
+      }
+    },
+    [active, doc, persist],
   );
 
   const adjustSupplied = useCallback(
@@ -296,6 +382,16 @@ export default function RequestsPage() {
           if (f) loadFile(f);
         }}
       />
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".pdf,.csv,.xlsx,application/pdf,text/csv"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) importFile(f);
+        }}
+      />
 
       {error && (
         <Banner tone="error" onClose={() => setError(null)}>
@@ -323,11 +419,23 @@ export default function RequestsPage() {
           </p>
           <div className="mt-6 flex flex-wrap justify-center gap-3">
             <button
+              onClick={() => fileRef.current?.click()}
+              disabled={importing}
+              className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand-600/25 transition hover:bg-brand-700 disabled:opacity-60"
+            >
+              {importing ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <UploadCloud className="h-4 w-4" />
+              )}
+              Upload their list
+            </button>
+            <button
               onClick={addRequest}
-              className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand-600/25 transition hover:bg-brand-700"
+              className="inline-flex items-center gap-2 rounded-xl border border-gray-300 bg-white px-5 py-2.5 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
             >
               <Plus className="h-4 w-4" />
-              New request list
+              Enter one by hand
             </button>
             <button
               onClick={() => jsonRef.current?.click()}
@@ -337,6 +445,10 @@ export default function RequestsPage() {
               Load a saved file
             </button>
           </div>
+          <p className="mt-4 text-xs text-gray-400">
+            PDF, CSV or XLSX. A plain list of items and quantities works, and so
+            does a priced order sheet - prices are ignored here.
+          </p>
         </div>
       )}
 
@@ -393,6 +505,18 @@ export default function RequestsPage() {
                 >
                   <Plus className="h-4 w-4" />
                   New request list
+                </button>
+                <button
+                  onClick={() => fileRef.current?.click()}
+                  disabled={importing}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
+                >
+                  {importing ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <UploadCloud className="h-4 w-4" />
+                  )}
+                  Upload a list
                 </button>
                 <button
                   onClick={saveFile}
@@ -631,17 +755,30 @@ export default function RequestsPage() {
                             )}
                           >
                             <td className="px-4 py-2.5">
-                              <span className="font-medium text-gray-800">
-                                {m.item.name}
-                              </span>
+                              <input
+                                value={m.item.name}
+                                onChange={(e) =>
+                                  updateLine(m.item.id, { name: e.target.value })
+                                }
+                                className="w-full rounded-md border border-transparent bg-transparent px-2 py-1 font-medium text-gray-800 outline-none transition hover:border-gray-200 focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-100"
+                              />
                               {m.item.note && (
-                                <span className="block text-xs text-gray-400">
+                                <span className="block px-2 text-xs text-gray-400">
                                   {m.item.note}
                                 </span>
                               )}
                             </td>
-                            <td className="px-2 py-2.5 text-center">
-                              {m.item.qty}
+                            <td className="px-2 py-2.5">
+                              <input
+                                value={m.item.qty}
+                                onChange={(e) =>
+                                  updateLine(m.item.id, {
+                                    qty: Number(e.target.value),
+                                  })
+                                }
+                                inputMode="numeric"
+                                className="w-full rounded-md border border-transparent bg-transparent px-1 py-1 text-center font-medium text-gray-800 outline-none transition hover:border-gray-200 focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-100"
+                              />
                             </td>
                             <td className="px-2 py-2.5">
                               <div className="flex items-center justify-center gap-1">
