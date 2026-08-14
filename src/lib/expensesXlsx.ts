@@ -99,7 +99,15 @@ export async function buildExpensesXlsx(sheet: BalanceSheet): Promise<Buffer> {
     { width: 18 },
   ];
 
-  titleRow(ws, "A1:D1", "Expenses");
+  titleRow(ws, "A1:C1", "Expenses");
+  // When this file was made, in the corner of the sheet. Two exports of the same
+  // expenses look identical otherwise, and an old download is easy to open by
+  // mistake. Kept on row 1 so no data row shifts.
+  const stamp = ws.getCell("D1");
+  stamp.value = `Generated ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
+  stamp.font = { italic: true, size: 8, color: { argb: "FF9CA3AF" } };
+  stamp.alignment = { horizontal: "right", vertical: "middle" };
+
   headerRow(ws, 2, ["Expense", "Partner", "Container", "Amount"], 3);
 
   expenses.forEach((expense, i) => {

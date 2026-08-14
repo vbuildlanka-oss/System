@@ -1586,25 +1586,43 @@ async function xlsxChecks() {
 
   section("Export filename");
   {
-    const name = balanceFilename("xlsx", new Date("2026-08-09T10:00:00Z"));
-    check(name === "Balance Sheet 2026-08-09.xlsx", `dated and readable (${name})`);
+    const noon = new Date("2026-08-09T10:00:00Z");
+    const name = balanceFilename("xlsx", noon);
+    check(name === "Balance Sheet 2026-08-09 1000.xlsx", `dated and readable (${name})`);
     check(
-      balanceFilename("csv", new Date("2026-08-09T10:00:00Z")) === "Balance Sheet 2026-08-09.csv",
+      balanceFilename("csv", noon) === "Balance Sheet 2026-08-09 1000.csv",
       "the CSV uses the same naming",
     );
     check(
       !balanceFilename("xlsx").includes("undefined") &&
         !Number.isNaN(Date.parse(balanceFilename("xlsx").slice(14, 24))),
-      "and defaults to today when no date is given",
+      "and defaults to now when no date is given",
     );
-    const expensesName = expensesFilename("xlsx", new Date("2026-08-09T10:00:00Z"));
+    const expensesName = expensesFilename("xlsx", noon);
     check(
-      expensesName === "Expenses 2026-08-09.xlsx",
+      expensesName === "Expenses 2026-08-09 1000.xlsx",
       `the expenses export is named so it cannot be mistaken for the full sheet (${expensesName})`,
     );
     check(
-      expensesName !== balanceFilename("xlsx", new Date("2026-08-09T10:00:00Z")),
+      expensesName !== balanceFilename("xlsx", noon),
       "and the two exports never collide in a downloads folder",
+    );
+
+    // Two exports on the same day must not land under the same name, or the
+    // browser keeps the older file under the obvious one and adds "(1)" to the
+    // new download - which is how a stale sheet gets opened by mistake.
+    const later = expensesFilename("xlsx", new Date("2026-08-09T10:41:00Z"));
+    check(
+      later !== expensesName,
+      `two exports on the same day get different names (${expensesName} vs ${later})`,
+    );
+    check(
+      !expensesName.includes(":") && !expensesName.includes("/"),
+      "and the name has no character Windows would refuse",
+    );
+    check(
+      expensesFilename("xlsx", new Date("not a date")).startsWith("Expenses 2"),
+      "an unusable date falls back to now rather than writing Invalid Date",
     );
   }
 

@@ -482,10 +482,13 @@ export function datedFilename(
   ext: string,
   on: Date = new Date(),
 ): string {
-  const day = Number.isNaN(on.getTime())
-    ? new Date().toISOString().slice(0, 10)
-    : on.toISOString().slice(0, 10);
-  return `${label} ${day}.${ext.replace(/[^\w]+/g, "")}`;
+  const safe = Number.isNaN(on.getTime()) ? new Date() : on;
+  // The time is in the name, not just the date. Two exports on the same day
+  // would otherwise both be "<label> <date>.xlsx", and the browser would save
+  // the second as "... (1).xlsx" - leaving the older file sitting under the
+  // obvious name, which is exactly how a stale sheet gets opened by mistake.
+  const stamp = safe.toISOString().slice(0, 16).replace("T", " ").replace(":", "");
+  return `${label} ${stamp}.${ext.replace(/[^\w]+/g, "")}`;
 }
 
 /** The whole sheet: turnover, expenses, profit. */
