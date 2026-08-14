@@ -13,6 +13,8 @@ import {
   DATA_SECTIONS,
   IDENTITY_KEYS,
   inspectStoredData,
+  parseBackupText,
+  restoreStoredData,
   type KeyValueStore,
 } from "../src/lib/appData";
 
@@ -358,6 +360,172 @@ section("Backing up before clearing");
   );
 }
 
+/* -------------------------------- restoring ------------------------------- */
+
+section("Restoring a backup");
+{
+  const source = populated();
+  const backup = backupStoredData(source);
+
+  const target = new FakeStore();
+  const result = restoreStoredData(backup, target);
+
+  check(result.problem === undefined, `a real backup restores (${result.problem ?? "no problem"})`);
+  check(result.restored.length === 9, `every key comes back (${result.restored.length})`);
+  check(
+    target.getItem("balebook.balanceSheet.v1") === BALANCE,
+    "with the data byte for byte",
+  );
+
+  const report = inspectStoredData(target);
+  check(
+    report.sections.every((s) => s.present),
+    "so every section is there afterwards",
+  );
+  check(
+    report.sections.find((s) => s.id === "stockpile")?.detail === "3 items, 1 movement",
+    "with the same contents",
+  );
+  check(
+    target.getItem("balebook.deviceId.v1") === "3F7K",
+    "and the device tag is put back, so references carry on where they were",
+  );
+}
+
+section("Restoring over existing data");
+{
+  const target = new FakeStore({
+    "balebook.balanceSheet.v1": JSON.stringify({ expenses: [{}], turnover: [] }),
+    "balebook.stockpile.v1": STOCK,
+  });
+  const backup = backupStoredData(populated());
+  restoreStoredData(backup, target);
+
+  check(
+    target.getItem("balebook.balanceSheet.v1") === BALANCE,
+    "a section in the file replaces what was there",
+  );
+  check(
+    inspectStoredData(target).sections.find((s) => s.id === "balanceSheet")?.detail ===
+      "4 expenses, 2 turnover entries",
+    "rather than being merged into it",
+  );
+}
+
+section("Refusing a file that is not a backup");
+{
+  const target = new FakeStore();
+  const cases: Array<[string, unknown]> = [
+    ["null", null],
+    ["a number", 42],
+    ["a string", "backup"],
+    ["an empty object", {}],
+    ["another app's JSON", { app: "something-else", data: { a: "b" } }],
+    ["a backup with no data", { app: "balebook-backup" }],
+    ["a backup with empty data", { app: "balebook-backup", data: {} }],
+    // The order editor's own saved document, chosen by mistake.
+    ["a document instead of a backup", { app: "balebook-order-editor", sheets: [] }],
+  ];
+  for (const entry of cases) {
+    const result = restoreStoredData(entry[1], target);
+    check(
+      result.problem !== undefined && result.restored.length === 0,
+      `${entry[0]} is refused, with a reason ("${result.problem ?? ""}")`,
+    );
+  }
+  check(target.length === 0, "and nothing was written while refusing any of them");
+}
+
+section("A backup file cannot reach beyond this app");
+{
+  // A hand-edited file could otherwise name any key in localStorage. Only keys
+  // under this app's own prefixes are ever written.
+  const target = new FakeStore({ "theme": "dark", "otherapp.session": "abc" });
+  // Written as text on purpose. In an object literal "__proto__" sets the
+  // prototype and never becomes a key, so building this with an object would
+  // quietly drop the very thing being tested. A real uploaded file is text.
+  const hostileFile = parseBackupText(
+    `{"app":"balebook-backup","version":1,"savedAt":"2026-08-14T00:00:00.000Z",` +
+      `"data":{"balebook.stockpile.v1":${JSON.stringify(STOCK)},` +
+      `"theme":"light","otherapp.session":"stolen","__proto__":"nonsense"}}`,
+  );
+  const result = restoreStoredData(hostileFile, target);
+
+  check(result.restored.length === 1, `only our own key is written (${result.restored.join(", ")})`);
+  check(target.getItem("balebook.stockpile.v1") === STOCK, "and it is written correctly");
+  check(target.getItem("theme") === "dark", "a stranger's key is left as it was");
+  check(
+    target.getItem("otherapp.session") === "abc",
+    "even when the file tries to overwrite it",
+  );
+  check(
+    result.refused.length === 3,
+    `and the refusals are reported (${result.refused.map((r) => r.key).join(", ")})`,
+  );
+  check(
+    result.refused.some((r) => r.key === "__proto__"),
+    "a __proto__ key in the file is refused like any other foreign key",
+  );
+  check(
+    ({} as Record<string, unknown>).nonsense === undefined,
+    "and nothing was pushed onto Object's prototype",
+  );
+  check(
+    result.refused.every((r) => r.reason !== ""),
+    "each with a reason",
+  );
+
+  const notText = restoreStoredData(
+    {
+      app: "balebook-backup",
+      version: 1,
+      savedAt: "",
+      data: { "balebook.stockpile.v1": { sneaky: true } } as never,
+    },
+    new FakeStore(),
+  );
+  check(
+    notText.refused.some((r) => r.reason === "not text"),
+    "a value that is not text is refused rather than stringified into the store",
+  );
+}
+
+section("Reading a backup file's text");
+{
+  check(parseBackupText("not json") === null, "unparseable text comes back as null");
+  check(parseBackupText("") === null, "so does empty text");
+  const parsed = parseBackupText(JSON.stringify({ app: "balebook-backup" })) as {
+    app?: string;
+  };
+  check(parsed?.app === "balebook-backup", "and good JSON comes back parsed");
+}
+
+section("Backup then clear then restore");
+{
+  // The whole point of the backup button sitting next to the delete button.
+  const store = populated();
+  const backup = backupStoredData(store);
+
+  clearStoredData({ store });
+  check(
+    inspectStoredData(store).sections.every((s) => !s.present),
+    "after clearing, every section is empty",
+  );
+
+  const result = restoreStoredData(backup, store);
+  check(result.problem === undefined, "the backup taken beforehand still restores");
+  const after = inspectStoredData(store);
+  check(
+    after.sections.every((s) => s.present),
+    "and brings every section back",
+  );
+  check(
+    after.sections.find((s) => s.id === "balanceSheet")?.detail ===
+      "4 expenses, 2 turnover entries",
+    "with nothing lost along the way",
+  );
+}
+
 /* -------------------------------- robustness ------------------------------- */
 
 section("When there is no store");
@@ -382,6 +550,9 @@ section("When the store misbehaves");
   // A store that throws on every call, as a full or locked-down one would.
   const hostile: KeyValueStore = {
     getItem() {
+      throw new Error("denied");
+    },
+    setItem() {
       throw new Error("denied");
     },
     removeItem() {
@@ -419,6 +590,31 @@ section("When the store misbehaves");
     threw = true;
   }
   check(!threw, "nor backing up");
+
+  threw = false;
+  let restoreResult: ReturnType<typeof restoreStoredData> | null = null;
+  try {
+    restoreResult = restoreStoredData(
+      {
+        app: "balebook-backup",
+        version: 1,
+        savedAt: "",
+        data: { "balebook.stockpile.v1": STOCK },
+      },
+      hostile,
+    );
+  } catch {
+    threw = true;
+  }
+  check(!threw, "nor restoring");
+  check(
+    restoreResult !== null && restoreResult.restored.length === 0,
+    "and a store that refuses to save reports nothing restored rather than lying",
+  );
+  check(
+    restoreResult !== null && restoreResult.problem !== undefined,
+    `with a problem to show the user ("${restoreResult?.problem ?? ""}")`,
+  );
 }
 
 section("The section list itself");

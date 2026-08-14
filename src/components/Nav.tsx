@@ -5,13 +5,13 @@ import { usePathname } from "next/navigation";
 import {
   Boxes,
   ClipboardList,
+  Database,
   FileSpreadsheet,
   ListChecks,
   PencilRuler,
   Scale,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
-import ClearDataButton from "./ClearDataButton";
 
 const links = [
   { href: "/", label: "Price List", icon: FileSpreadsheet },
@@ -53,7 +53,19 @@ export default function Nav() {
             );
           })}
           <span className="mx-1 h-5 w-px bg-gray-200" aria-hidden />
-          <ClearDataButton />
+          <Link
+            href="/data"
+            title="See and delete the data saved in this browser"
+            className={cn(
+              "inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition",
+              pathname === "/data"
+                ? "bg-red-50 text-red-700"
+                : "text-gray-500 hover:bg-red-50 hover:text-red-700",
+            )}
+          >
+            <Database className="h-4 w-4" />
+            <span className="hidden lg:inline">Saved data</span>
+          </Link>
         </div>
       </div>
     </nav>

@@ -18,6 +18,7 @@
 /** The slice of the localStorage API used here, so a fake can be passed in. */
 export interface KeyValueStore {
   getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
   removeItem(key: string): void;
   key(index: number): string | null;
   readonly length: number;
@@ -46,6 +47,8 @@ export interface DataSection {
   legacyKeys: string[];
   /** A short human count of what is stored, e.g. "3 order sheets". */
   describe: (parsed: unknown) => string;
+  /** Field holding when it was last written, if the document records one. */
+  timestampField?: "updatedAt" | "savedAt";
 }
 
 function plural(n: number, one: string, many = `${one}s`): string {
@@ -69,6 +72,7 @@ export const DATA_SECTIONS: DataSection[] = [
     // the rename, so both have to go or the sheets come back.
     legacyKeys: ["balebook.orderEditor.v1", "vbuild.orderEditor.v1"],
     describe: (p) => plural(countOf(p, "sheets"), "open order sheet"),
+    timestampField: "savedAt",
   },
   {
     id: "bagManifests",
@@ -77,6 +81,7 @@ export const DATA_SECTIONS: DataSection[] = [
     key: "balebook.bagManifests.v1",
     legacyKeys: ["balebook.bagLists.v1"],
     describe: (p) => plural(countOf(p, "manifests"), "manifest"),
+    timestampField: "updatedAt",
   },
   {
     id: "stockpile",
@@ -86,6 +91,7 @@ export const DATA_SECTIONS: DataSection[] = [
     legacyKeys: ["vbuild.stockpile.v1"],
     describe: (p) =>
       `${plural(countOf(p, "items"), "item")}, ${plural(countOf(p, "history"), "movement")}`,
+    timestampField: "updatedAt",
   },
   {
     id: "requests",
@@ -95,6 +101,7 @@ export const DATA_SECTIONS: DataSection[] = [
     legacyKeys: [],
     describe: (p) =>
       `${plural(countOf(p, "requests"), "request list")}, ${plural(countOf(p, "sources"), "uploaded file")}`,
+    timestampField: "updatedAt",
   },
   {
     id: "balanceSheet",
@@ -104,6 +111,7 @@ export const DATA_SECTIONS: DataSection[] = [
     legacyKeys: [],
     describe: (p) =>
       `${plural(countOf(p, "expenses"), "expense")}, ${plural(countOf(p, "turnover"), "turnover entry", "turnover entries")}`,
+    timestampField: "updatedAt",
   },
   {
     id: "buyers",
@@ -144,6 +152,10 @@ export interface SectionState {
   /** What is in it, or why it is empty. */
   detail: string;
   bytes: number;
+  /** ISO time it was last written, when the document records one. */
+  savedAt: string | null;
+  /** The key it lives under, so the page can be plain about what it deletes. */
+  keys: string[];
 }
 
 export interface StoredDataReport {
@@ -184,6 +196,8 @@ export function inspectStoredData(
       present: false,
       detail: "nothing saved",
       bytes: 0,
+      savedAt: null,
+      keys: [s.key, ...s.legacyKeys],
     })),
     identity: { present: false, detail: "not set up yet", bytes: 0 },
     leftovers: [],
@@ -208,6 +222,7 @@ export function inspectStoredData(
         sizeOf(store, section.key) +
         section.legacyKeys.reduce((sum, k) => sum + sizeOf(store, k), 0);
 
+      const keys = [section.key, ...section.legacyKeys];
       if (raw === null) {
         return {
           id: section.id,
@@ -216,11 +231,23 @@ export function inspectStoredData(
           present: false,
           detail: "nothing saved",
           bytes,
+          savedAt: null,
+          keys,
         };
       }
       let detail: string;
+      let savedAt: string | null = null;
       try {
-        detail = section.describe(JSON.parse(raw));
+        const parsed = JSON.parse(raw);
+        detail = section.describe(parsed);
+        if (section.timestampField && parsed && typeof parsed === "object") {
+          const stamp = (parsed as Record<string, unknown>)[section.timestampField];
+          // Only a date that actually parses, so a junk value is shown as
+          // unknown rather than as "Invalid Date".
+          if (typeof stamp === "string" && !Number.isNaN(Date.parse(stamp))) {
+            savedAt = stamp;
+          }
+        }
       } catch {
         detail = "saved, but unreadable";
       }
@@ -231,6 +258,8 @@ export function inspectStoredData(
         present: true,
         detail,
         bytes,
+        savedAt,
+        keys,
       };
     });
 
@@ -400,4 +429,93 @@ export function clearStoredData(options: ClearOptions = {}): ClearResult {
   }
 
   return result;
+}
+
+
+/* -------------------------------- restoring ------------------------------- */
+
+export interface RestoreResult {
+  /** Keys written back. */
+  restored: string[];
+  /** Keys in the file that were refused, and why. */
+  refused: Array<{ key: string; reason: string }>;
+  problem?: string;
+}
+
+/**
+ * Put a backup file back.
+ *
+ * Two things are checked rather than trusted. The file has to actually be one of
+ * ours, so a wrong file chosen by accident is refused instead of scattering
+ * nonsense through the store. And every key in it is checked against this app's
+ * own prefixes before being written, because a hand-edited file could otherwise
+ * name any key in localStorage and reach data belonging to something else on the
+ * domain.
+ *
+ * Restoring replaces a key outright rather than merging. Merging two versions of
+ * an accounting document without being asked is a worse outcome than replacing
+ * one, and the caller is expected to have said so.
+ */
+export function restoreStoredData(
+  file: unknown,
+  store: KeyValueStore | null = browserStore(),
+): RestoreResult {
+  const result: RestoreResult = { restored: [], refused: [] };
+
+  if (!file || typeof file !== "object") {
+    result.problem = "That file is not a BaleBook backup.";
+    return result;
+  }
+  const backup = file as Partial<BackupFile>;
+  if (backup.app !== "balebook-backup") {
+    result.problem =
+      "That file is not a BaleBook backup. Use a file downloaded from this page.";
+    return result;
+  }
+  if (!backup.data || typeof backup.data !== "object") {
+    result.problem = "That backup has no data in it.";
+    return result;
+  }
+  if (!store) {
+    result.problem = "This browser will not let the app save anything.";
+    return result;
+  }
+
+  const entries = Object.keys(backup.data as Record<string, unknown>);
+  if (entries.length === 0) {
+    result.problem = "That backup is empty, so there is nothing to put back.";
+    return result;
+  }
+
+  for (const key of entries) {
+    const value = (backup.data as Record<string, unknown>)[key];
+    if (typeof value !== "string") {
+      result.refused.push({ key, reason: "not text" });
+      continue;
+    }
+    if (!OWNED_PREFIXES.some((p) => key.startsWith(p))) {
+      result.refused.push({ key, reason: "not a BaleBook key" });
+      continue;
+    }
+    try {
+      store.setItem(key, value);
+      result.restored.push(key);
+    } catch {
+      result.refused.push({ key, reason: "could not be saved" });
+    }
+  }
+
+  if (result.restored.length === 0) {
+    result.problem = "Nothing in that file could be restored.";
+  }
+  return result;
+}
+
+/** Read a backup file's text. Kept here so the page does not parse JSON itself. */
+export function parseBackupText(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }

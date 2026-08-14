@@ -293,15 +293,23 @@ belongs to.
 
 ---
 
-## Clear saved data (every page)
+## 7. Saved Data (`/data`)
 
-Everything this app remembers lives in your browser. **Clear data** in the top
-bar, on every page, shows what is stored and lets you delete it.
+Everything this app remembers lives in your browser. **Saved data** in the top
+bar, reachable from every page, shows what is stored and lets you choose what to
+delete. Back up, choose, delete — in that order down the page.
 
 - **It tells you what will go**, section by section, with counts read out of the
-  store — "4 expenses, 2 turnover entries", "3 items, 1 movement" — so a full
-  section is never mistaken for an empty one. Tick only the sections you want, or
-  clear the lot.
+  store — "4 expenses, 2 turnover entries", "3 items, 1 movement" — plus when it
+  was last saved, its size, and the key it lives under. A full section is never
+  mistaken for an empty one, and data that will not parse is reported as
+  unreadable rather than as absent. Tick only the sections you want, or select
+  all. Each row links to the page it belongs to.
+- **Restore from a backup**, so the backup is worth taking. The file has to be one
+  of ours or it is refused, and every key in it is checked against this app's own
+  prefixes before being written — a hand-edited file cannot reach data belonging
+  to anything else on the domain. Restoring replaces a section rather than merging
+  into it, and says so before it runs.
 - **Backup first, in the same dialog.** One button downloads every stored key
   exactly as saved, including keys this version no longer uses, so a later version
   can still read it. Restoring that file brings every section back.
