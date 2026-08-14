@@ -293,6 +293,35 @@ belongs to.
 
 ---
 
+## Clear saved data (every page)
+
+Everything this app remembers lives in your browser. **Clear data** in the top
+bar, on every page, shows what is stored and lets you delete it.
+
+- **It tells you what will go**, section by section, with counts read out of the
+  store — "4 expenses, 2 turnover entries", "3 items, 1 movement" — so a full
+  section is never mistaken for an empty one. Tick only the sections you want, or
+  clear the lot.
+- **Backup first, in the same dialog.** One button downloads every stored key
+  exactly as saved, including keys this version no longer uses, so a later version
+  can still read it. Restoring that file brings every section back.
+- **Reference numbering is left alone by default.** A reference is the device tag,
+  the date and a counter. Wiping the counter while keeping the tag would restart it
+  at `001` for today and could reprint a reference already on a document that has
+  gone out — so those keys are separate, opt-in, and only ever cleared *together*.
+  A fresh tag cannot reproduce anything issued under the old one, which is what
+  makes clearing them safe.
+- **Old keys go too.** Reads fall back to pre-rename keys and copy the data
+  forward, so clearing only the current key would make everything reappear on the
+  next load. Every legacy copy is deleted, and a full clear also sweeps stray keys
+  from older versions.
+- **Nothing else on the domain is touched** — only keys under this app's own
+  prefixes.
+- **The page reloads afterwards.** Each page holds its data in memory and
+  autosaves, so a page left open would write everything straight back.
+
+---
+
 ## Deploy to Vercel (1-click)
 
 This app lives at the repository root, so Vercel auto-detects it as a Next.js
@@ -332,6 +361,7 @@ npx tsx scripts/verify-bag-manifest.ts  # manifests: containers, reduction, expo
 npx tsx scripts/verify-refno.ts         # references: device tags, uniqueness
 npx tsx scripts/verify-request.ts       # buyer requests: matching, supplying, files
 npx tsx scripts/verify-balance.ts       # balance sheet: profit scopes, workbooks, import
+npx tsx scripts/verify-appdata.ts       # saved data: listing, backup, clearing
 ```
 
 ---

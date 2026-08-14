@@ -11,6 +11,7 @@ import {
   Scale,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
+import ClearDataButton from "./ClearDataButton";
 
 const links = [
   { href: "/", label: "Price List", icon: FileSpreadsheet },
@@ -51,6 +52,8 @@ export default function Nav() {
               </Link>
             );
           })}
+          <span className="mx-1 h-5 w-px bg-gray-200" aria-hidden />
+          <ClearDataButton />
         </div>
       </div>
     </nav>
