@@ -68,7 +68,7 @@ export function parseCsv(text: string): string[][] {
 
 /* -------------------------------- helpers -------------------------------- */
 
-function cellText(cell: Cell): string {
+export function cellText(cell: Cell): string {
   if (cell === null || cell === undefined) return "";
   return String(cell).trim();
 }
@@ -231,19 +231,74 @@ export function parseCsvOrder(
   return parseTabularOrder(parseCsv(text), fallbackTitle);
 }
 
-/** Parse an XLSX upload. Reads the first worksheet. */
-export async function parseXlsxOrder(
+/** One worksheet reduced to a grid of cells. */
+export interface SheetGrid {
+  name: string;
+  rows: Cell[][];
+}
+
+/**
+ * Read an XLSX upload into a grid per worksheet.
+ *
+ * Every sheet is returned rather than only the first, because a workbook is not
+ * always laid out the way the uploader assumes: someone re-uploading a whole
+ * balance sheet workbook expects the expenses to be found on the Expenses tab,
+ * not for the parse to fail on whatever tab happens to come first. Callers pick
+ * the sheet they want.
+ *
+ * `minColumns` pads short rows, so a row that stops early still yields the
+ * columns the caller is looking for instead of a ragged grid.
+ */
+export async function xlsxToGrids(
   buffer: Buffer,
-  fallbackTitle: string,
-): Promise<ParsedOrder> {
+  minColumns = 4,
+): Promise<SheetGrid[]> {
   // Imported lazily so the spreadsheet library is only loaded when a
   // spreadsheet is actually uploaded.
   const ExcelJS = (await import("exceljs")).default;
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer as unknown as ArrayBuffer);
 
-  const sheet = workbook.worksheets[0];
-  if (!sheet) {
+  return workbook.worksheets.map((sheet) => {
+    const rows: Cell[][] = [];
+    sheet.eachRow({ includeEmpty: true }, (row) => {
+      const cells: Cell[] = [];
+      const count = Math.max(row.cellCount, minColumns);
+      for (let c = 1; c <= count; c += 1) {
+        const value = row.getCell(c).value;
+        if (value === null || value === undefined) {
+          cells.push("");
+        } else if (value instanceof Date) {
+          // A date would otherwise stringify to a long locale-specific form.
+          cells.push(value.toISOString().slice(0, 10));
+        } else if (typeof value === "object") {
+          // Formulas and rich text arrive as objects; take the computed result.
+          const v = value as { result?: unknown; text?: unknown };
+          cells.push(
+            v.result !== undefined && v.result !== null
+              ? (v.result as Cell)
+              : v.text !== undefined
+                ? String(v.text)
+                : "",
+          );
+        } else {
+          cells.push(value as Cell);
+        }
+      }
+      rows.push(cells);
+    });
+    return { name: sheet.name, rows };
+  });
+}
+
+/** Parse an XLSX upload. Reads the first worksheet. */
+export async function parseXlsxOrder(
+  buffer: Buffer,
+  fallbackTitle: string,
+): Promise<ParsedOrder> {
+  const grids = await xlsxToGrids(buffer);
+  const first = grids[0];
+  if (!first) {
     return {
       title: fallbackTitle,
       items: [],
@@ -253,31 +308,5 @@ export async function parseXlsxOrder(
       totalsMatch: true,
     };
   }
-
-  const rows: Cell[][] = [];
-  sheet.eachRow({ includeEmpty: true }, (row) => {
-    const cells: Cell[] = [];
-    const count = Math.max(row.cellCount, 4);
-    for (let c = 1; c <= count; c += 1) {
-      const value = row.getCell(c).value;
-      if (value === null || value === undefined) {
-        cells.push("");
-      } else if (typeof value === "object") {
-        // Formulas and rich text arrive as objects; take the computed result.
-        const v = value as { result?: unknown; text?: unknown };
-        cells.push(
-          v.result !== undefined
-            ? (v.result as Cell)
-            : v.text !== undefined
-              ? String(v.text)
-              : "",
-        );
-      } else {
-        cells.push(value as Cell);
-      }
-    }
-    rows.push(cells);
-  });
-
-  return parseTabularOrder(rows, fallbackTitle);
+  return parseTabularOrder(first.rows, fallbackTitle);
 }

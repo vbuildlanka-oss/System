@@ -24,6 +24,18 @@ export const RULE = "FF4F46E5";
 export const UNASSIGNED_PARTNER = "Unassigned";
 
 /**
+ * The label written in a Container column for an expense that belongs to no
+ * container.
+ *
+ * It is a real value rather than a blank cell for three reasons: the SUMIF that
+ * picks out general overhead has something dependable to match on, a reader is
+ * never left wondering whether the cell was missed, and an exported sheet that
+ * is edited and read back in can tell "no container" apart from "the container
+ * was cut off", so the round trip does not quietly reassign the expense.
+ */
+export const GENERAL_LABEL = "(general)";
+
+/**
  * How many rows a data block occupies. Always at least one, so that an empty
  * sheet still has a blank row between the header and the total. Without it the
  * total row would land inside its own SUM range and Excel would refuse the file

@@ -18,6 +18,17 @@ import { buildBalanceXlsx } from "../src/lib/balanceXlsx";
 import { buildExpensesXlsx } from "../src/lib/expensesXlsx";
 import { totalRow } from "../src/lib/xlsxKit";
 import { POST as balanceExportPost } from "../src/app/api/balance-export/route";
+import { POST as expensesImportPost } from "../src/app/api/expenses-import/route";
+import { xlsxToGrids } from "../src/lib/parseTabular";
+import {
+  addImportedExpenses,
+  markDuplicates,
+  newRows,
+  parseExpenseGrid,
+  pickExpenseSheet,
+  type ImportedRow,
+  type SkippedRow,
+} from "../src/lib/expensesImport";
 import {
   addExpense,
   addTurnover,
@@ -39,6 +50,7 @@ import {
   removeTurnover,
   updateExpense,
   MAX_ENTRIES,
+  type Expense,
   type BalanceSheet,
 } from "../src/lib/balanceSheet";
 import { LIMITS } from "../src/lib/types";
@@ -847,19 +859,31 @@ async function xlsxChecks() {
     check(
       String(ws.getCell("A2").value) === "Expense" &&
         String(ws.getCell("B2").value) === "Partner" &&
-        String(ws.getCell("C2").value) === "Amount",
-      `the columns are Expense, Partner, Amount (${[1, 2, 3].map((c) => String(ws.getRow(2).getCell(c).value)).join(", ")})`,
+        String(ws.getCell("C2").value) === "Container" &&
+        String(ws.getCell("D2").value) === "Amount",
+      `the columns are Expense, Partner, Container, Amount (${[1, 2, 3, 4].map((c) => String(ws.getRow(2).getCell(c).value)).join(", ")})`,
     );
 
     // 4 expenses -> rows 3..6, total row 7.
-    check(ws.getCell("C3").value === 150_000, "an amount is a real number");
+    check(ws.getCell("D3").value === 150_000, "an amount is a real number");
     check(
-      f(ws, "C7") === "SUM(C3:C6)",
-      `the total is a live SUM over exactly the entry rows (${f(ws, "C7")})`,
+      String(ws.getCell("C3").value) === A,
+      `a tagged expense names its container (${String(ws.getCell("C3").value)})`,
+    );
+    const generalCell = [3, 4, 5, 6]
+      .map((n) => String(ws.getCell(`C${n}`).value))
+      .find((v) => v === "(general)");
+    check(
+      generalCell === "(general)",
+      "an untagged expense reads as (general), so the round trip cannot invent a container",
     );
     check(
-      r(ws, "C7") === totals.expenses,
-      `and equals the expense total, so nothing is double counted (${String(r(ws, "C7"))})`,
+      f(ws, "D7") === "SUM(D3:D6)",
+      `the total is a live SUM over exactly the entry rows (${f(ws, "D7")})`,
+    );
+    check(
+      r(ws, "D7") === totals.expenses,
+      `and equals the expense total, so nothing is double counted (${String(r(ws, "D7"))})`,
     );
     check(String(ws.getCell("A7").value) === "Total", "the total row is labelled");
   }
@@ -892,7 +916,7 @@ async function xlsxChecks() {
     const blob = texts.join(" | ");
 
     for (const id of [A, B]) {
-      check(!blob.includes(id), `the container ID ${id} appears nowhere in the file`);
+      check(blob.includes(id), `the container ID ${id} is present, as it must be`);
     }
     for (const figure of [1_200_000, 800_000, 2_000_000, 1_440_000, 700_000]) {
       check(
@@ -908,13 +932,13 @@ async function xlsxChecks() {
       formulas.length > 0 && formulas.every((formula) => !/Turnover|Profit|Margin/i.test(formula)),
       "and none of them mention turnover, profit or margin",
     );
-    // A fourth column would be the easy way for a container or date to sneak in.
+    // A fifth column would be the easy way for turnover or a profit to sneak in.
     let strayColumn = false;
     ws.eachRow({ includeEmpty: true }, (row) => {
-      const cell = row.getCell(4).value;
+      const cell = row.getCell(5).value;
       if (cell !== null && cell !== undefined && cell !== "") strayColumn = true;
     });
-    check(!strayColumn, "column D is empty, so there is no fourth field hiding");
+    check(!strayColumn, "column E is empty, so there is no fifth field hiding");
   }
 
   section("Expenses-only workbook: grouped by partner, with live per-partner figures");
@@ -941,7 +965,7 @@ async function xlsxChecks() {
     );
     check(String(ws.getCell("A10").value) === "Anton", "listing each partner");
     check(
-      f(ws, "B10") === "SUMIF($B$3:$B$6,$A10,$C$3:$C$6)",
+      f(ws, "B10") === "SUMIF($B$3:$B$6,$A10,$D$3:$D$6)",
       `their total is a SUMIF over the entry rows only (${f(ws, "B10")})`,
     );
     check(r(ws, "B10") === 400_000, "with the right cached figure");
@@ -975,9 +999,13 @@ async function xlsxChecks() {
     const oneBook = new ExcelJS.Workbook();
     await oneBook.xlsx.load(one as unknown as ArrayBuffer);
     const ows = oneBook.getWorksheet("Expenses")!;
-    check(ows.getCell("C3").value === 60_000, "a sheet with no turnover still exports");
-    check(f(ows, "C4") === "SUM(C3:C3)", `with a total over the single row (${f(ows, "C4")})`);
-    check(r(ows, "C4") === 60_000, "and the right answer");
+    check(ows.getCell("D3").value === 60_000, "a sheet with no turnover still exports");
+    check(f(ows, "D4") === "SUM(D3:D3)", `with a total over the single row (${f(ows, "D4")})`);
+    check(r(ows, "D4") === 60_000, "and the right answer");
+    check(
+      String(ows.getCell("C3").value) === "(general)",
+      "and an untagged expense is labelled, not blank",
+    );
     check(
       String(ows.getCell("B3").value) === "Bala",
       "an untagged expense keeps its partner, since that is what this sheet is for",
@@ -989,14 +1017,14 @@ async function xlsxChecks() {
     const blankBook = new ExcelJS.Workbook();
     await blankBook.xlsx.load(blank as unknown as ArrayBuffer);
     const bws = blankBook.getWorksheet("Expenses")!;
-    const blankTotal = f(bws, "C4");
+    const blankTotal = f(bws, "D4");
     const rows = rangeRows(blankTotal);
     check(
       rows !== null && rows[1] < 4,
       `an empty export still keeps the total outside its own SUM (${blankTotal})`,
     );
     const blankCells = await cachedCells(blank, 1);
-    check(blankCells.get("C4")?.cached === "0", "and caches it as 0");
+    check(blankCells.get("D4")?.cached === "0", "and caches it as 0");
 
     // An expense arriving with no partner must still be attributable.
     const parsed = parseBalanceSheet({
@@ -1058,7 +1086,7 @@ async function xlsxChecks() {
     await onlyBook.xlsx.load(await only.arrayBuffer());
     check(onlyBook.worksheets.length === 1, `with one tab (${onlyBook.worksheets.length})`);
     check(
-      onlyBook.worksheets[0].getCell("C3").value === 150_000,
+      onlyBook.worksheets[0].getCell("D3").value === 150_000,
       "and the expenses in it",
     );
 
@@ -1108,6 +1136,452 @@ async function xlsxChecks() {
         );
       }
     }
+  }
+
+  section("Import: the round trip through Excel");
+  {
+    // Export, then read the very same file back. This is the case that matters:
+    // it is what happens when a sheet is exported, edited and uploaded again.
+    const buf = await buildExpensesXlsx(sheet);
+    const back = pickExpenseSheet(await xlsxToGrids(buf));
+
+    check(back.problem === undefined, `the exported file reads back (${back.problem ?? "no problem"})`);
+    check(back.sheetName === "Expenses", `from the Expenses sheet (${back.sheetName})`);
+    check(
+      back.rows.length === 4,
+      `all four expenses come back, and nothing extra (${back.rows.length})`,
+    );
+
+    const names = back.rows.map((row) => row.name);
+    check(
+      !names.includes("Total"),
+      `the Total row is not read as an expense (${names.join(", ")})`,
+    );
+    check(
+      !names.includes("Anton") && !names.includes("Bala"),
+      "and neither is the per-partner block below it",
+    );
+
+    const byName = new Map(back.rows.map((row) => [row.name, row]));
+    const duty = byName.get("Customs duty");
+    check(duty !== undefined && duty.amount === 150_000, `an amount survives (${duty?.amount})`);
+    check(duty !== undefined && duty.partner === "Anton", "a partner survives");
+    check(duty !== undefined && duty.containerId === A, `a container survives (${duty?.containerId})`);
+
+    const rent = byName.get("Office rent");
+    check(
+      rent !== undefined && rent.containerId === "",
+      `the (general) label comes back as no container, not as a container called "general" (${JSON.stringify(rent?.containerId)})`,
+    );
+
+    const total = back.rows.reduce((s, row) => s + row.amount, 0);
+    check(
+      total === totals.expenses,
+      `the imported rows total exactly what was exported (${total} vs ${totals.expenses})`,
+    );
+
+    // Re-importing must not quietly double the sheet.
+    const marked = markDuplicates(back.rows, sheet.expenses);
+    check(
+      marked.every((row) => row.duplicate),
+      "re-importing the same file flags every row as already present",
+    );
+    check(newRows(marked).length === 0, "so nothing is added by accident");
+  }
+
+  section("Import: adding rows in Excel, the way it will actually be used");
+  {
+    // The realistic edit: keep the exported rows, type two more underneath.
+    const grid: unknown[][] = [
+      ["Expenses", "", "", ""],
+      ["Expense", "Partner", "Container", "Amount"],
+      ["Customs duty", "Anton", A, 150_000],
+      ["Freight", "Anton", A, 250_000],
+      ["Labour", "Bala", B, 100_000],
+      ["Office rent", "Bala", "(general)", 60_000],
+      ["Port handling", "Anton", A, 45_000],
+      ["Insurance", "Chandra", "(general)", 30_000],
+      ["Total", "", "", 635_000],
+      [],
+      ["Partner", "Total", "Entries", ""],
+      ["Anton", 445_000, 3, ""],
+      ["Bala", 160_000, 2, ""],
+      ["Total", 635_000, 6, ""],
+    ];
+    const read = parseExpenseGrid(grid as never, "Expenses");
+
+    check(read.rows.length === 6, `all six rows are read (${read.rows.length})`);
+    check(
+      read.rows.map((r2) => r2.name).join(" > ") ===
+        "Customs duty > Freight > Labour > Office rent > Port handling > Insurance",
+      `in file order (${read.rows.map((r2) => r2.name).join(" > ")})`,
+    );
+
+    const marked = markDuplicates(read.rows, sheet.expenses);
+    const fresh = newRows(marked);
+    check(
+      fresh.length === 2 && fresh.map((r2) => r2.name).join(", ") === "Port handling, Insurance",
+      `only the two new rows are new (${fresh.map((r2) => r2.name).join(", ")})`,
+    );
+
+    const result = addImportedExpenses(sheet, fresh, "Expenses.xlsx");
+    check(result.added === 2, `two are added (${result.added})`);
+    check(result.dropped === 0, "and none are dropped");
+    check(
+      result.sheet.expenses.length === sheet.expenses.length + 2,
+      `the sheet grows by exactly two (${result.sheet.expenses.length})`,
+    );
+    check(
+      balanceTotals(result.sheet).expenses === totals.expenses + 75_000,
+      `and the expense total grows by 75,000 (${balanceTotals(result.sheet).expenses})`,
+    );
+    check(
+      byPartner(result.sheet).some((p) => p.partner === "Chandra"),
+      "a partner who only appears in the file is picked up",
+    );
+    check(
+      byContainer(result.sheet).find((c2) => c2.containerId === A)?.expenses === 445_000,
+      "and the container's costs rise by the tagged row only",
+    );
+    check(
+      result.sheet.expenses[0].note.includes("Expenses.xlsx"),
+      `an imported row records where it came from (${result.sheet.expenses[0].note})`,
+    );
+    // The original sheet must not have been mutated.
+    check(
+      sheet.expenses.length === 4,
+      "importing leaves the sheet it was given alone",
+    );
+  }
+
+  section("Import: rows added in the wrong place are still found");
+  {
+    // Real editing is untidy. A row typed *below* the Total row is the common
+    // one: the spreadsheet's own SUM will not cover it, but the import must
+    // still find it, or the row is silently lost on upload.
+    const belowTotal: unknown[][] = [
+      ["Expense", "Partner", "Container", "Amount"],
+      ["Customs duty", "Anton", A, 150_000],
+      ["Total", "", "", 150_000],
+      ["Port handling", "Anton", A, 45_000],
+      ["Insurance", "Chandra", "(general)", 30_000],
+    ];
+    const read = parseExpenseGrid(belowTotal as never, "Expenses");
+    check(
+      read.rows.length === 3,
+      `a row typed below the Total row is still imported (${read.rows.length} of 3)`,
+    );
+    check(
+      read.rows.map((x) => x.name).includes("Port handling"),
+      "the Total row is stepped over rather than treated as the end of the data",
+    );
+    check(
+      read.skipped.some((s) => s.reason.includes("total row")),
+      "and the Total row itself is still reported as skipped",
+    );
+
+    // A gap in the middle must not end the parse either.
+    const gapped: unknown[][] = [
+      ["Expense", "Partner", "Container", "Amount"],
+      ["Customs duty", "Anton", A, 150_000],
+      ["", "", "", ""],
+      ["", "", "", ""],
+      ["Freight", "Anton", A, 250_000],
+    ];
+    check(
+      parseExpenseGrid(gapped as never, "Expenses").rows.length === 2,
+      "blank rows in the middle do not end the import",
+    );
+
+    // But a per-partner block must end it, or its totals become expenses.
+    const withBlock: unknown[][] = [
+      ["Expense", "Partner", "Container", "Amount"],
+      ["Customs duty", "Anton", A, 150_000],
+      ["", "", "", ""],
+      ["Partner", "Total", "Entries", ""],
+      ["Anton", 150_000, 1, ""],
+    ];
+    const blocked = parseExpenseGrid(withBlock as never, "Expenses");
+    check(
+      blocked.rows.length === 1 && blocked.rows[0].name === "Customs duty",
+      `a per-partner block ends the import (${blocked.rows.length} row read)`,
+    );
+    check(
+      !blocked.rows.some((x) => x.name === "Anton"),
+      "so a partner's total is never read back as an expense called after them",
+    );
+  }
+
+  section("Import: nothing is dropped silently");
+  {
+    const grid: unknown[][] = [
+      ["Expense", "Partner", "Container", "Amount"],
+      ["Good one", "Anton", A, 1000],
+      ["", "Anton", A, 500], // no name
+      ["No amount here", "Anton", A, ""], // no amount
+      ["Zero", "Anton", A, 0],
+      ["Negative", "Anton", A, -50],
+      ["Credit note", "Anton", A, "(500)"], // bracketed = a credit
+      ["Nobody", "", A, 700], // no partner
+      ["Silly money", "Anton", A, 1e15], // over the cap
+      ["Subtotal", "", "", 9999], // a total row
+      ["Anton total", "", "", 9999], // and another
+    ];
+    const read = parseExpenseGrid(grid as never, "Sheet1");
+
+    check(read.rows.length === 1, `only the good row is imported (${read.rows.length})`);
+    check(read.rows[0].name === "Good one", "and it is the right one");
+    check(
+      read.skipped.length === 9,
+      `every other row is reported, not dropped (${read.skipped.length} reported)`,
+    );
+    for (const row of read.skipped) {
+      check(
+        row.reason.length > 0 && row.row > 0,
+        `row ${row.row} says why it was skipped ("${row.reason}")`,
+      );
+    }
+    const reasons = read.skipped.map((s) => s.reason);
+    check(
+      reasons.filter((x) => x.includes("credit")).length === 2,
+      `a bracketed amount is treated as a credit, not as a cost (${reasons.filter((x) => x.includes("credit")).length})`,
+    );
+    check(
+      reasons.some((x) => x.includes("total row")),
+      "a total row is named as such",
+    );
+    check(
+      reasons.some((x) => x.includes("no partner")),
+      "an unattributable row is named as such",
+    );
+  }
+
+  section("Import: messy real-world sheets");
+  {
+    // Different headings, different column order, money as text, a title above.
+    const grid: unknown[][] = [
+      ["Our expenses for August", "", "", ""],
+      ["", "", "", ""],
+      ["Paid by", "Amount (LKR)", "Description", "Container No."],
+      ["  Anton  ", "Rs 150,000.00", "  Customs   duty  ", " gaou 744174-0 "],
+      ["Bala", "60000", "Office rent", "none"],
+      ["Chandra", "1 250", "Tea", ""],
+    ];
+    const read = parseExpenseGrid(grid as never, "Sheet1");
+
+    check(read.rows.length === 3, `columns are found by heading, in any order (${read.rows.length})`);
+    check(read.found.container, "a Container No. heading is recognised");
+    const first = read.rows[0];
+    check(first.name === "Customs duty", `whitespace is tidied (${JSON.stringify(first.name)})`);
+    check(first.partner === "Anton", `so is the partner (${JSON.stringify(first.partner)})`);
+    check(first.amount === 150_000, `"Rs 150,000.00" is read as a number (${first.amount})`);
+    check(
+      first.containerId === A,
+      `a scruffy container ID is normalised (${first.containerId})`,
+    );
+    check(read.rows[1].containerId === "", `"none" means no container (${JSON.stringify(read.rows[1].containerId)})`);
+    check(read.rows[2].amount === 1250, `"1 250" is read as 1250 (${read.rows[2].amount})`);
+  }
+
+  section("Import: sheets that cannot be read say so");
+  {
+    const noHeader = parseExpenseGrid(
+      [["just", "some", "words"], ["and", "more", "words"]] as never,
+      "Sheet1",
+    );
+    check(
+      noHeader.problem !== undefined && noHeader.problem.includes("heading"),
+      `a sheet with no heading row explains itself ("${noHeader.problem ?? ""}")`,
+    );
+
+    const noPartner = parseExpenseGrid(
+      [["Expense", "Amount"], ["Customs duty", 150_000]] as never,
+      "Sheet1",
+    );
+    check(
+      noPartner.problem !== undefined && noPartner.problem.includes("Partner"),
+      `a sheet with no partner column names what is missing ("${noPartner.problem ?? ""}")`,
+    );
+    check(noPartner.rows.length === 0, "and imports nothing rather than guessing");
+
+    const empty = parseExpenseGrid([] as never, "Sheet1");
+    check(empty.problem !== undefined, "an empty sheet is reported, not crashed on");
+
+    // "Expense Amount" must be the amount, not the name.
+    const clash = parseExpenseGrid(
+      [
+        ["Expense Name", "Partner", "Expense Amount"],
+        ["Customs duty", "Anton", 150_000],
+      ] as never,
+      "Sheet1",
+    );
+    check(
+      clash.rows.length === 1 && clash.rows[0].amount === 150_000,
+      `"Expense Amount" is read as the amount, not the name (${JSON.stringify(clash.rows[0])})`,
+    );
+  }
+
+  section("Import: uploading the whole balance sheet workbook");
+  {
+    // A likely mistake worth handling: the full five-tab export is uploaded
+    // instead of the expenses-only one. The Expenses tab should be found.
+    const full = await buildBalanceXlsx(sheet);
+    const read = pickExpenseSheet(await xlsxToGrids(full));
+
+    check(read.sheetName === "Expenses", `the Expenses tab is chosen (${read.sheetName})`);
+    check(read.rows.length === 4, `and read (${read.rows.length} rows)`);
+    check(
+      read.rows.reduce((s, row) => s + row.amount, 0) === totals.expenses,
+      "with the right total",
+    );
+    check(
+      read.rows.every((row) => row.partner !== ""),
+      "every row keeps its partner",
+    );
+    const tagged = read.rows.filter((row) => row.containerId !== "");
+    check(tagged.length === 3, `and the container tags come through (${tagged.length} of 4)`);
+  }
+
+  section("Import: duplicates are counted, not merely matched");
+  {
+    // Two identical charges are perfectly possible, so the second must not be
+    // written off as a duplicate of the first.
+    let twice = emptyBalanceSheet();
+    twice = addExpense(
+      twice,
+      createExpense({ name: "Freight", partner: "Anton", amount: 5_000, containerId: A }),
+    );
+
+    const rows: ImportedRow[] = [
+      { name: "Freight", partner: "Anton", containerId: A, amount: 5_000, row: 3, duplicate: false },
+      { name: "Freight", partner: "Anton", containerId: A, amount: 5_000, row: 4, duplicate: false },
+    ];
+    const marked = markDuplicates(rows, twice.expenses);
+    check(marked[0].duplicate, "the first matches the one already on the sheet");
+    check(
+      !marked[1].duplicate,
+      "the second is genuinely new, and is not written off as a repeat",
+    );
+
+    const caseOnly = markDuplicates(
+      [{ name: "  FREIGHT ", partner: "anton", containerId: A, amount: 5_000, row: 3, duplicate: false }],
+      twice.expenses,
+    );
+    check(
+      caseOnly[0].duplicate,
+      "matching ignores case and padding, so a retyped row is still spotted",
+    );
+
+    const different = markDuplicates(
+      [{ name: "Freight", partner: "Anton", containerId: B, amount: 5_000, row: 3, duplicate: false }],
+      twice.expenses,
+    );
+    check(
+      !different[0].duplicate,
+      "the same charge against a different container is not a duplicate",
+    );
+  }
+
+  section("Import: the entry cap");
+  {
+    let packed = emptyBalanceSheet();
+    const many: Expense[] = [];
+    for (let i = 0; i < MAX_ENTRIES - 1; i += 1) {
+      many.push(createExpense({ name: `E${i}`, partner: "Anton", amount: 1 }));
+    }
+    packed = { ...packed, expenses: many };
+
+    const rows: ImportedRow[] = [1, 2, 3].map((n) => ({
+      name: `New ${n}`,
+      partner: "Anton",
+      containerId: "",
+      amount: 100,
+      row: n + 2,
+      duplicate: false,
+    }));
+    const result = addImportedExpenses(packed, rows);
+    check(result.added === 1, `only what fits is added (${result.added})`);
+    check(result.dropped === 2, `and the overflow is reported (${result.dropped})`);
+    check(
+      result.sheet.expenses.length === MAX_ENTRIES,
+      `the sheet stops at the cap (${result.sheet.expenses.length})`,
+    );
+  }
+
+  section("Import: the upload route");
+  {
+    const upload = async (name: string, body: Buffer | string) => {
+      const form = new FormData();
+      form.append("file", new File([body as unknown as BlobPart], name));
+      return expensesImportPost(
+        new Request("http://localhost/api/expenses-import", {
+          method: "POST",
+          body: form,
+        }) as unknown as NextRequest,
+      );
+    };
+
+    const xlsx = await buildExpensesXlsx(sheet);
+    const ok = await upload("Expenses.xlsx", xlsx);
+    check(ok.status === 200, `an exported workbook is accepted (${ok.status})`);
+    const okBody = (await ok.json()) as {
+      rows?: ImportedRow[];
+      sheetName?: string;
+      fileName?: string;
+    };
+    check(okBody.rows?.length === 4, `with its four rows (${okBody.rows?.length})`);
+    check(okBody.fileName === "Expenses.xlsx", "and the file name is echoed back for the notice");
+
+    const csv = await upload(
+      "expenses.csv",
+      "Expense,Partner,Container,Amount\nCustoms duty,Anton,GAOU7441740,150000\nOffice rent,Bala,(general),60000\n",
+    );
+    check(csv.status === 200, `a CSV is accepted too (${csv.status})`);
+    const csvBody = (await csv.json()) as { rows?: ImportedRow[] };
+    check(csvBody.rows?.length === 2, `with both rows (${csvBody.rows?.length})`);
+    check(
+      csvBody.rows?.[1].containerId === "",
+      "and (general) still means no container",
+    );
+
+    const xls = await upload("old.xls", "anything");
+    check(xls.status === 400, `an .xls file is refused (${xls.status})`);
+    check(
+      (((await xls.json()) as { error?: string }).error ?? "").includes("Re-save"),
+      "with advice on what to do about it",
+    );
+
+    const wrong = await upload("notes.txt", "hello");
+    check(wrong.status === 400, `an unsupported type is refused (${wrong.status})`);
+
+    const empty = await upload("empty.csv", "nothing useful here\n");
+    check(empty.status === 422, `a file with no expenses in it is refused (${empty.status})`);
+    check(
+      (((await empty.json()) as { error?: string }).error ?? "").length > 20,
+      "and the reply says why rather than just failing",
+    );
+
+    const noFile = await expensesImportPost(
+      new Request("http://localhost/api/expenses-import", {
+        method: "POST",
+        body: new FormData(),
+      }) as unknown as NextRequest,
+    );
+    check(noFile.status === 400, `a request with no file is refused (${noFile.status})`);
+
+    const skipReport = await upload(
+      "mixed.csv",
+      "Expense,Partner,Container,Amount\nGood,Anton,GAOU7441740,100\nTotal,,,100\n",
+    );
+    const skipBody = (await skipReport.json()) as {
+      rows?: ImportedRow[];
+      skipped?: SkippedRow[];
+    };
+    check(skipBody.rows?.length === 1, "a total row in a CSV is not imported");
+    check(
+      (skipBody.skipped?.length ?? 0) === 1,
+      `and the route reports it as skipped (${skipBody.skipped?.length})`,
+    );
   }
 
   section("Export filename");

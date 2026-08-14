@@ -18,6 +18,7 @@ import {
   Container as ContainerIcon,
   Loader2,
   Sheet as SheetIcon,
+  Upload,
 } from "lucide-react";
 import {
   addExpense,
@@ -44,9 +45,25 @@ import {
   updateTurnover,
   type BalanceSheet,
 } from "@/lib/balanceSheet";
+import {
+  addImportedExpenses,
+  markDuplicates,
+  newRows,
+  type ImportedRow,
+  type SkippedRow,
+} from "@/lib/expensesImport";
 import { checkContainerNumber } from "@/lib/container";
 import { formatLKR } from "@/lib/types";
 import { cn } from "@/lib/cn";
+
+/** A spreadsheet that has been read but not yet accepted onto the sheet. */
+interface PendingImport {
+  fileName: string;
+  sheetName: string;
+  rows: ImportedRow[];
+  skipped: SkippedRow[];
+  skippedTotal: number;
+}
 
 export default function BalancePage() {
   const [sheet, setSheet] = useState<BalanceSheet | null>(null);
@@ -56,6 +73,13 @@ export default function BalancePage() {
   /** Which export is being built, so only that button shows a spinner. */
   const [building, setBuilding] = useState<"full" | "expenses" | null>(null);
   const jsonRef = useRef<HTMLInputElement>(null);
+  const importRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+  /**
+   * A read file waiting to be accepted. Nothing is added until it is, so an
+   * unexpected file can be looked at and thrown away rather than undone.
+   */
+  const [pending, setPending] = useState<PendingImport | null>(null);
 
   // Turnover form
   const [tvContainer, setTvContainer] = useState("");
@@ -235,6 +259,84 @@ export default function BalancePage() {
   }, [sheet, downloadBlob]);
 
   /**
+   * Read an expenses spreadsheet, but do not add anything yet.
+   *
+   * Duplicates are worked out here rather than on the server, because this is
+   * the side that holds the balance sheet to compare against.
+   */
+  const importFile = useCallback(
+    async (file: File) => {
+      if (!sheet) return;
+      setError(null);
+      setNotice(null);
+      setPending(null);
+      setImporting(true);
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        const res = await fetch("/api/expenses-import", {
+          method: "POST",
+          body: fd,
+        });
+        const data = (await res.json()) as {
+          error?: string;
+          fileName?: string;
+          sheetName?: string;
+          rows?: ImportedRow[];
+          skipped?: SkippedRow[];
+          skippedTotal?: number;
+        };
+        if (!res.ok) throw new Error(data.error || "Could not read that file.");
+
+        const rows = markDuplicates(data.rows ?? [], sheet.expenses);
+        setPending({
+          fileName: data.fileName ?? file.name,
+          sheetName: data.sheetName ?? "",
+          rows,
+          skipped: data.skipped ?? [],
+          skippedTotal: data.skippedTotal ?? (data.skipped ?? []).length,
+        });
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "Could not read that file.",
+        );
+      } finally {
+        setImporting(false);
+        // Cleared so picking the same file again still fires onChange.
+        if (importRef.current) importRef.current.value = "";
+      }
+    },
+    [sheet],
+  );
+
+  /** Accept a read file: either only the rows that look new, or all of them. */
+  const commitImport = useCallback(
+    (which: "new" | "all") => {
+      if (!sheet || !pending) return;
+      const chosen = which === "new" ? newRows(pending.rows) : pending.rows;
+      if (chosen.length === 0) {
+        setError("There is nothing new in that file to add.");
+        return;
+      }
+      const result = addImportedExpenses(sheet, chosen, pending.fileName);
+      persist(result.sheet);
+      setPending(null);
+      setError(null);
+      const repeats = chosen.length - newRows(pending.rows).length;
+      setNotice(
+        `Added ${result.added} expense${result.added === 1 ? "" : "s"} from ${pending.fileName}.` +
+          (repeats > 0
+            ? ` ${repeats} of them already matched an entry on the sheet.`
+            : "") +
+          (result.dropped > 0
+            ? ` ${result.dropped} did not fit and were left out.`
+            : ""),
+      );
+    },
+    [sheet, pending, persist],
+  );
+
+  /**
    * Both workbooks are built on the server, because ExcelJS is far too heavy to
    * ship to the browser for a button that is pressed now and then.
    */
@@ -321,6 +423,16 @@ export default function BalancePage() {
         onChange={(e) => {
           const f = e.target.files?.[0];
           if (f) loadFile(f);
+        }}
+      />
+      <input
+        ref={importRef}
+        type="file"
+        accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) importFile(f);
         }}
       />
 
@@ -594,7 +706,7 @@ export default function BalancePage() {
 
       {/* ------------------------------ Expenses ----------------------------- */}
       <section className="mt-6 rounded-2xl border border-gray-200 bg-white shadow-sm">
-        <div className="border-b border-gray-100 px-5 py-4">
+        <div className="relative border-b border-gray-100 px-5 py-4 pr-44">
           <h2 className="flex items-center gap-2 font-semibold text-gray-900">
             <Receipt className="h-4 w-4 text-brand-600" />
             Expenses
@@ -603,7 +715,29 @@ export default function BalancePage() {
             Tag a container to count an expense against its profit. Leave it
             blank for general overhead.
           </p>
+          <button
+            onClick={() => importRef.current?.click()}
+            disabled={importing}
+            title="Read expenses from an XLSX or CSV file and add them to this sheet"
+            className="absolute right-5 top-4 inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-40"
+          >
+            {importing ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Upload className="h-3.5 w-3.5" />
+            )}
+            {importing ? "Reading..." : "Import from Excel"}
+          </button>
         </div>
+
+        {pending && (
+          <ImportPreview
+            pending={pending}
+            onAddNew={() => commitImport("new")}
+            onAddAll={() => commitImport("all")}
+            onCancel={() => setPending(null)}
+          />
+        )}
 
         <div className="flex flex-wrap items-end gap-3 border-b border-gray-100 bg-gray-50/60 px-5 py-4">
           <div className="min-w-[160px] flex-1">
@@ -1009,6 +1143,134 @@ function Stat({
       >
         {value}
       </p>
+    </div>
+  );
+}
+
+/**
+ * What was read from a spreadsheet, before any of it is accepted.
+ *
+ * Both halves are shown deliberately: the rows that will be added, and the rows
+ * that will not be, with the reason for each. A row that was skipped is the one
+ * thing an importer must never hide, because it looks exactly like a row that
+ * was never in the file.
+ */
+function ImportPreview({
+  pending,
+  onAddNew,
+  onAddAll,
+  onCancel,
+}: {
+  pending: PendingImport;
+  onAddNew: () => void;
+  onAddAll: () => void;
+  onCancel: () => void;
+}) {
+  const fresh = pending.rows.filter((r) => !r.duplicate).length;
+  const repeats = pending.rows.length - fresh;
+
+  return (
+    <div className="animate-fade-in border-b border-amber-200 bg-amber-50/60 px-5 py-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-gray-900">
+            Read {pending.rows.length} expense
+            {pending.rows.length === 1 ? "" : "s"} from {pending.fileName}
+            {pending.sheetName ? ` (${pending.sheetName})` : ""}
+          </p>
+          <p className="mt-0.5 text-xs text-gray-600">
+            {fresh} new
+            {repeats > 0 && `, ${repeats} already matching an entry here`}
+            {pending.skippedTotal > 0 &&
+              `, ${pending.skippedTotal} row${pending.skippedTotal === 1 ? "" : "s"} skipped`}
+            . Nothing has been added yet.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={onCancel}
+            className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+          {repeats > 0 && (
+            <button
+              onClick={onAddAll}
+              title="Add every row, including the ones that match an entry already here"
+              className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
+            >
+              Add all {pending.rows.length}
+            </button>
+          )}
+          <button
+            onClick={onAddNew}
+            disabled={fresh === 0}
+            className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-brand-700 disabled:opacity-40"
+          >
+            Add {fresh} new
+          </button>
+        </div>
+      </div>
+
+      <div className="preview-scroll mt-3 max-h-56 overflow-auto rounded-lg border border-amber-200 bg-white">
+        <table className="w-full text-left text-xs">
+          <thead className="sticky top-0 bg-gray-50 text-gray-500">
+            <tr>
+              <th className="px-3 py-2 font-medium">Row</th>
+              <th className="px-3 py-2 font-medium">Expense</th>
+              <th className="px-3 py-2 font-medium">Partner</th>
+              <th className="px-3 py-2 font-medium">Container</th>
+              <th className="px-3 py-2 text-right font-medium">Amount</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {pending.rows.map((row, i) => (
+              <tr key={`${row.row}-${i}`} className={row.duplicate ? "bg-gray-50" : ""}>
+                <td className="px-3 py-1.5 text-gray-400">{row.row}</td>
+                <td className="px-3 py-1.5 text-gray-900">
+                  {row.name}
+                  {row.duplicate && (
+                    <span className="ml-2 rounded bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
+                      already here
+                    </span>
+                  )}
+                </td>
+                <td className="px-3 py-1.5 text-gray-700">{row.partner}</td>
+                <td className="px-3 py-1.5 text-gray-500">
+                  {row.containerId || "general"}
+                </td>
+                <td className="px-3 py-1.5 text-right tabular-nums text-gray-900">
+                  {formatLKR(row.amount)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {pending.skipped.length > 0 && (
+        <details className="mt-2">
+          <summary className="cursor-pointer text-xs font-medium text-gray-600">
+            {pending.skippedTotal} row
+            {pending.skippedTotal === 1 ? "" : "s"} skipped - see why
+          </summary>
+          <ul className="preview-scroll mt-2 max-h-40 space-y-1 overflow-auto text-xs text-gray-600">
+            {pending.skipped.map((s, i) => (
+              <li key={`${s.row}-${i}`} className="rounded bg-white/70 px-2 py-1">
+                <span className="text-gray-400">Row {s.row}:</span> {s.reason}
+                {s.detail && (
+                  <span className="text-gray-400"> - {s.detail}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+          {pending.skippedTotal > pending.skipped.length && (
+            <p className="mt-1 text-xs text-gray-400">
+              Showing the first {pending.skipped.length}.
+            </p>
+          )}
+        </details>
+      )}
     </div>
   );
 }

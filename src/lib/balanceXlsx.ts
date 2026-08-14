@@ -11,6 +11,7 @@ import {
   DATE_FMT,
   emphasise,
   formula,
+  GENERAL_LABEL,
   headerRow,
   lastDataRow,
   MONEY_FMT,
@@ -50,13 +51,6 @@ const S_EXPENSES = "Expenses";
 const S_TURNOVER = "Turnover";
 const S_PARTNER = "By Partner";
 
-/**
- * The label written in the Container column for an expense that belongs to no
- * container. It is a real value rather than a blank cell so that the SUMIF
- * picking out general overhead has something dependable to match on, and so a
- * reader is never left wondering whether the cell was missed.
- */
-export const GENERAL_LABEL = "(general)";
 /** The label on the general overhead row of the Profit by Container tab. */
 export const GENERAL_ROW_LABEL = "(general, not per container)";
 

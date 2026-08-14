@@ -252,13 +252,39 @@ belongs to.
   in red, dates are real dates, and the entry tabs come with filters on.
   Every formula also carries a cached answer, so totals are visible in Google
   Sheets, LibreOffice and mail preview panes that do not recalculate on open.
-- **Expenses-only export** — a second button giving a one-tab workbook of just
-  **expense name, partner and amount**, for handing to a partner or a bookkeeper.
-  It carries no turnover, profit, margin or container: those are absent from the
-  file rather than hidden in it, the same rule the bag manifests follow. Rows are
-  grouped so each partner's expenses sit together, with a live total and a live
-  per-partner block below. Saved as `Expenses <date>.xlsx`, so it can never be
-  mistaken for the full sheet.
+- **Expenses-only export** — a second button giving a one-tab workbook of
+  **expense name, partner, container and amount**. It carries no turnover, profit
+  or margin, so what the containers earned stays out of it. Rows are grouped so
+  each partner's expenses sit together, with a live total and a live per-partner
+  block below. Saved as `Expenses <date>.xlsx`, so it can never be mistaken for
+  the full sheet.
+- **Expenses import** — **Import from Excel** on the Expenses section reads an
+  `.xlsx` or `.csv` back in, so the round trip works: export, add rows in Excel,
+  upload, and the new rows land on the sheet.
+
+  Two rules run through the importer:
+
+  - **Nothing is imported that is not clearly an expense.** The exported sheet has
+    a Total row and a per-partner block below the entries, and a naive reader
+    would add those back as expenses called "Total" and "Anton". The per-partner
+    block ends the read; a Total row is stepped over, so a row typed *below* it is
+    still found.
+  - **Nothing is dropped silently.** Every row that is not imported is listed with
+    the reason — no name, no amount, no partner, a zero, a bracketed credit, or an
+    amount beyond the cap.
+
+  Nothing is added until you accept it. The preview shows what will be added,
+  which rows already match an entry on the sheet, and everything skipped. Repeats
+  are **counted, not just matched**: if the sheet has one 5,000 freight charge and
+  the file has two, the second is genuinely new. You choose **Add new only** or
+  **Add all**.
+
+  Columns are found by their heading, in any order, so a sheet someone else typed
+  works too — `Paid by`, `Description`, `Amount (LKR)`, `Container No.` are all
+  understood. `Rs 150,000.00`, `1 250` and a plain number all read as money.
+  Uploading the **whole** five-tab workbook works as well: its Expenses tab is
+  found rather than failing on Summary. `(general)` comes back as no container, so
+  overhead never acquires one on the way through.
 - **CSV export** — the same sheet as one flat file: both halves, then the
   summary, per-container and per-partner blocks.
 - **Storage**: one JSON document, autosaved in the browser and downloadable.
@@ -305,7 +331,7 @@ npx tsx scripts/verify-api.ts        # API routes: every success and failure pat
 npx tsx scripts/verify-bag-manifest.ts  # manifests: containers, reduction, exports
 npx tsx scripts/verify-refno.ts         # references: device tags, uniqueness
 npx tsx scripts/verify-request.ts       # buyer requests: matching, supplying, files
-npx tsx scripts/verify-balance.ts       # balance sheet: profit scopes, partners, CSV
+npx tsx scripts/verify-balance.ts       # balance sheet: profit scopes, workbooks, import
 ```
 
 ---
