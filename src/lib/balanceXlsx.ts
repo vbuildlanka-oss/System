@@ -5,6 +5,22 @@ import {
   byPartner,
   type BalanceSheet,
 } from "./balanceSheet";
+import {
+  chronological,
+  DATA_START_ROW,
+  DATE_FMT,
+  emphasise,
+  formula,
+  headerRow,
+  lastDataRow,
+  MONEY_FMT,
+  noteAt,
+  PERCENT_FMT,
+  titleRow,
+  totalRow,
+  UNASSIGNED_PARTNER,
+  type Formula,
+} from "./xlsxKit";
 
 /**
  * The spreadsheet version of the balance sheet: five tabs, and every figure on
@@ -27,9 +43,6 @@ import {
  * overhead gets a labelled row of its own rather than being spread around.
  */
 
-/** Row 1 is the tab title, row 2 the column header, so data starts at row 3. */
-export const DATA_START_ROW = 3;
-
 /** Sheet names, quoted in formulas because two of them contain spaces. */
 const S_SUMMARY = "Summary";
 const S_CONTAINER = "Profit by Container";
@@ -46,57 +59,6 @@ const S_PARTNER = "By Partner";
 export const GENERAL_LABEL = "(general)";
 /** The label on the general overhead row of the Profit by Container tab. */
 export const GENERAL_ROW_LABEL = "(general, not per container)";
-/** Partner shown for an expense that arrived without one, matching byPartner. */
-export const UNASSIGNED_PARTNER = "Unassigned";
-
-const MONEY_FMT = '"Rs"#,##0.00;[Red]-"Rs"#,##0.00';
-const PERCENT_FMT = "0.0%";
-const DATE_FMT = "yyyy-mm-dd";
-const INK = "FF1F2937";
-const ACCENT = "FFE0E7FF";
-const RULE = "FF4F46E5";
-
-/**
- * How many rows a data block occupies. Always at least one, so that an empty
- * sheet still has a blank row between the header and the total. Without it the
- * total row would land inside its own SUM range and Excel would refuse the file
- * as a circular reference.
- */
-function blockRows(count: number): number {
-  return Math.max(count, 1);
-}
-
-/**
- * Oldest entry first.
- *
- * The page lists the newest entry at the top, which is what you want while
- * typing, but a workbook is read as a ledger - down the page, in the order
- * things happened. Entries made in the same moment keep the order they were
- * typed in: the array is newest-first, so ties are broken by reversing it.
- *
- * Sorting cannot affect any figure, because every formula on the other tabs
- * matches on the container or partner rather than on a row position.
- */
-function chronological<T extends { at: string }>(rows: T[]): T[] {
-  const when = (row: T): number => {
-    const parsed = Date.parse(row.at);
-    return Number.isNaN(parsed) ? 0 : parsed;
-  };
-  return rows
-    .map((row, index) => ({ row, index }))
-    .sort((a, b) => when(a.row) - when(b.row) || b.index - a.index)
-    .map((entry) => entry.row);
-}
-
-/** Last row of a data block, i.e. the last row a SUM should reach. */
-export function lastDataRow(count: number): number {
-  return DATA_START_ROW + blockRows(count) - 1;
-}
-
-/** The row holding the Total for a block of `count` entries. */
-export function totalRow(count: number): number {
-  return lastDataRow(count) + 1;
-}
 
 /** An absolute range over one column of a data block, e.g. `'Expenses'!$E$3:$E$9`. */
 function colRange(sheet: string, col: string, count: number): string {
@@ -106,69 +68,6 @@ function colRange(sheet: string, col: string, count: number): string {
 /** A margin as the fraction a percent-formatted cell expects, e.g. 72 -> 0.72. */
 function marginFraction(margin: number | null): number | "" {
   return margin === null ? "" : margin / 100;
-}
-
-interface Formula {
-  formula: string;
-  result: number | string;
-}
-
-/** A formula cell carrying its own answer. */
-function formula(f: string, result: number | string): Formula {
-  return { formula: f, result };
-}
-
-function titleRow(sheet: ExcelJS.Worksheet, span: string, text: string): void {
-  sheet.mergeCells(span);
-  const cell = sheet.getCell(span.split(":")[0]);
-  cell.value = text;
-  cell.font = { bold: true, size: 15 };
-  cell.alignment = { vertical: "middle" };
-  sheet.getRow(1).height = 24;
-}
-
-function headerRow(
-  sheet: ExcelJS.Worksheet,
-  rowNumber: number,
-  labels: string[],
-  rightFrom = 1,
-): void {
-  const row = sheet.getRow(rowNumber);
-  row.values = labels;
-  row.font = { bold: true, color: { argb: "FFFFFFFF" } };
-  row.height = 18;
-  labels.forEach((_, i) => {
-    const cell = row.getCell(i + 1);
-    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: INK } };
-    cell.alignment = {
-      vertical: "middle",
-      horizontal: i + 1 > rightFrom ? "right" : "left",
-    };
-  });
-}
-
-/** Bold, ruled and tinted - used for every Total row in the workbook. */
-function emphasise(row: ExcelJS.Row, columns: number): void {
-  row.font = { bold: true };
-  for (let col = 1; col <= columns; col += 1) {
-    const cell = row.getCell(col);
-    cell.border = { top: { style: "thin", color: { argb: RULE } } };
-    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: ACCENT } };
-  }
-}
-
-function noteAt(
-  sheet: ExcelJS.Worksheet,
-  rowNumber: number,
-  span: string,
-  text: string,
-): void {
-  sheet.mergeCells(span);
-  const cell = sheet.getCell(`A${rowNumber}`);
-  cell.value = text;
-  cell.font = { italic: true, size: 9, color: { argb: "FF6B7280" } };
-  cell.alignment = { wrapText: true, vertical: "top" };
-  sheet.getRow(rowNumber).height = 28;
 }
 
 export async function buildBalanceXlsx(sheet: BalanceSheet): Promise<Buffer> {

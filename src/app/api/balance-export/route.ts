@@ -1,16 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   balanceFilename,
+  expensesFilename,
   parseBalanceSheet,
   MAX_ENTRIES,
 } from "@/lib/balanceSheet";
 import { buildBalanceXlsx } from "@/lib/balanceXlsx";
+import { buildExpensesXlsx } from "@/lib/expensesXlsx";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+interface ExportBody {
+  /** "full" for the whole sheet, "expenses" for the expenses on their own. */
+  scope?: unknown;
+  sheet?: unknown;
+}
+
 /**
  * Turn a balance sheet into a workbook.
+ *
+ * Two scopes are served from here rather than from two routes, so the payload
+ * validation below cannot drift between them:
+ *
+ *   full      five tabs - turnover, expenses, profit per container, partners
+ *   expenses  one tab of expense name, partner and amount, and nothing else
  *
  * The build happens on the server for the same reason the manifest and PDF
  * exports do: ExcelJS is far too heavy to ship to the browser, and the /balance
@@ -22,10 +36,23 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const sheet = parseBalanceSheet(body);
+    const raw = (await req.json()) as unknown;
+    // A body of null, a number or a string would throw on a property read, and a
+    // malformed request deserves a 400 rather than a 500.
+    const body: ExportBody =
+      raw !== null && typeof raw === "object" ? (raw as ExportBody) : {};
+    const expensesOnly = body.scope === "expenses";
+    // The sheet used to be posted as the whole body, so both shapes are read.
+    const sheet = parseBalanceSheet(body.sheet ?? raw);
 
-    if (sheet.expenses.length === 0 && sheet.turnover.length === 0) {
+    if (expensesOnly) {
+      if (sheet.expenses.length === 0) {
+        return NextResponse.json(
+          { error: "There are no expenses to export yet." },
+          { status: 400 },
+        );
+      }
+    } else if (sheet.expenses.length === 0 && sheet.turnover.length === 0) {
       return NextResponse.json(
         { error: "There is nothing to export yet." },
         { status: 400 },
@@ -41,13 +68,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const xlsx = await buildBalanceXlsx(sheet);
+    const xlsx = expensesOnly
+      ? await buildExpensesXlsx(sheet)
+      : await buildBalanceXlsx(sheet);
+    const filename = expensesOnly
+      ? expensesFilename("xlsx")
+      : balanceFilename("xlsx");
+
     return new NextResponse(new Uint8Array(xlsx), {
       status: 200,
       headers: {
         "Content-Type":
           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "Content-Disposition": `attachment; filename="${balanceFilename("xlsx")}"`,
+        "Content-Disposition": `attachment; filename="${filename}"`,
         "Cache-Control": "no-store",
       },
     });

@@ -252,6 +252,13 @@ belongs to.
   in red, dates are real dates, and the entry tabs come with filters on.
   Every formula also carries a cached answer, so totals are visible in Google
   Sheets, LibreOffice and mail preview panes that do not recalculate on open.
+- **Expenses-only export** — a second button giving a one-tab workbook of just
+  **expense name, partner and amount**, for handing to a partner or a bookkeeper.
+  It carries no turnover, profit, margin or container: those are absent from the
+  file rather than hidden in it, the same rule the bag manifests follow. Rows are
+  grouped so each partner's expenses sit together, with a live total and a live
+  per-partner block below. Saved as `Expenses <date>.xlsx`, so it can never be
+  mistaken for the full sheet.
 - **CSV export** — the same sheet as one flat file: both halves, then the
   summary, per-container and per-partner blocks.
 - **Storage**: one JSON document, autosaved in the browser and downloadable.

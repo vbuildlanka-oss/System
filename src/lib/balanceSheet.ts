@@ -474,14 +474,28 @@ function csvCell(value: string | number): string {
 }
 
 /**
- * The name of an exported balance sheet. Dated, so a folder of them sorts into
- * order on its own and one export never quietly overwrites another.
+ * The name of an export. Dated, so a folder of them sorts into order on its own
+ * and one export never quietly overwrites another.
  */
-export function balanceFilename(ext: string, on: Date = new Date()): string {
+export function datedFilename(
+  label: string,
+  ext: string,
+  on: Date = new Date(),
+): string {
   const day = Number.isNaN(on.getTime())
     ? new Date().toISOString().slice(0, 10)
     : on.toISOString().slice(0, 10);
-  return `Balance Sheet ${day}.${ext.replace(/[^\w]+/g, "")}`;
+  return `${label} ${day}.${ext.replace(/[^\w]+/g, "")}`;
+}
+
+/** The whole sheet: turnover, expenses, profit. */
+export function balanceFilename(ext: string, on: Date = new Date()): string {
+  return datedFilename("Balance Sheet", ext, on);
+}
+
+/** The expenses on their own, named so it cannot be mistaken for the full sheet. */
+export function expensesFilename(ext: string, on: Date = new Date()): string {
+  return datedFilename("Expenses", ext, on);
 }
 
 /**

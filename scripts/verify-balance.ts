@@ -13,13 +13,18 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
-import { buildBalanceXlsx, totalRow } from "../src/lib/balanceXlsx";
+import type { NextRequest } from "next/server";
+import { buildBalanceXlsx } from "../src/lib/balanceXlsx";
+import { buildExpensesXlsx } from "../src/lib/expensesXlsx";
+import { totalRow } from "../src/lib/xlsxKit";
+import { POST as balanceExportPost } from "../src/app/api/balance-export/route";
 import {
   addExpense,
   addTurnover,
   balanceFilename,
   balanceToCsv,
   balanceTotals,
+  expensesFilename,
   byContainer,
   byPartner,
   checkExpense,
@@ -830,6 +835,281 @@ async function xlsxChecks() {
     );
   }
 
+  section("Expenses-only workbook: just the three fields");
+  {
+    const buf = await buildExpensesXlsx(sheet);
+    const book2 = new ExcelJS.Workbook();
+    await book2.xlsx.load(buf as unknown as ArrayBuffer);
+
+    check(book2.worksheets.length === 1, `one tab, not five (${book2.worksheets.length})`);
+    const ws = book2.getWorksheet("Expenses")!;
+    check(ws !== undefined, "and it is called Expenses");
+    check(
+      String(ws.getCell("A2").value) === "Expense" &&
+        String(ws.getCell("B2").value) === "Partner" &&
+        String(ws.getCell("C2").value) === "Amount",
+      `the columns are Expense, Partner, Amount (${[1, 2, 3].map((c) => String(ws.getRow(2).getCell(c).value)).join(", ")})`,
+    );
+
+    // 4 expenses -> rows 3..6, total row 7.
+    check(ws.getCell("C3").value === 150_000, "an amount is a real number");
+    check(
+      f(ws, "C7") === "SUM(C3:C6)",
+      `the total is a live SUM over exactly the entry rows (${f(ws, "C7")})`,
+    );
+    check(
+      r(ws, "C7") === totals.expenses,
+      `and equals the expense total, so nothing is double counted (${String(r(ws, "C7"))})`,
+    );
+    check(String(ws.getCell("A7").value) === "Total", "the total row is labelled");
+  }
+
+  section("Expenses-only workbook: nothing else leaks into the file");
+  {
+    // The point of this export is that it can be handed to someone without also
+    // handing over what the containers earned. So the figures are checked to be
+    // absent from the file, not merely hidden in it.
+    const buf = await buildExpensesXlsx(sheet);
+    const book2 = new ExcelJS.Workbook();
+    await book2.xlsx.load(buf as unknown as ArrayBuffer);
+    const ws = book2.getWorksheet("Expenses")!;
+
+    const texts: string[] = [];
+    const numbers: number[] = [];
+    const formulas: string[] = [];
+    ws.eachRow({ includeEmpty: true }, (row) => {
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        const v = cell.value as unknown;
+        if (typeof v === "number") numbers.push(v);
+        else if (typeof v === "string") texts.push(v);
+        else if (v && typeof v === "object") {
+          const obj = v as { formula?: string; result?: unknown };
+          if (typeof obj.formula === "string") formulas.push(obj.formula);
+          if (typeof obj.result === "number") numbers.push(obj.result);
+        }
+      });
+    });
+    const blob = texts.join(" | ");
+
+    for (const id of [A, B]) {
+      check(!blob.includes(id), `the container ID ${id} appears nowhere in the file`);
+    }
+    for (const figure of [1_200_000, 800_000, 2_000_000, 1_440_000, 700_000]) {
+      check(
+        !numbers.includes(figure),
+        `no turnover or profit figure (${figure}) appears as a value`,
+      );
+    }
+    check(
+      formulas.every((formula) => !formula.includes("!")),
+      `no formula reaches out to another tab (${formulas.filter((x) => x.includes("!")).join(", ") || "none do"})`,
+    );
+    check(
+      formulas.length > 0 && formulas.every((formula) => !/Turnover|Profit|Margin/i.test(formula)),
+      "and none of them mention turnover, profit or margin",
+    );
+    // A fourth column would be the easy way for a container or date to sneak in.
+    let strayColumn = false;
+    ws.eachRow({ includeEmpty: true }, (row) => {
+      const cell = row.getCell(4).value;
+      if (cell !== null && cell !== undefined && cell !== "") strayColumn = true;
+    });
+    check(!strayColumn, "column D is empty, so there is no fourth field hiding");
+  }
+
+  section("Expenses-only workbook: grouped by partner, with live per-partner figures");
+  {
+    const buf = await buildExpensesXlsx(sheet);
+    const book2 = new ExcelJS.Workbook();
+    await book2.xlsx.load(buf as unknown as ArrayBuffer);
+    const ws = book2.getWorksheet("Expenses")!;
+
+    const rows = [3, 4, 5, 6].map(
+      (n) => `${String(ws.getCell(`A${n}`).value)}/${String(ws.getCell(`B${n}`).value)}`,
+    );
+    check(
+      rows.join(" > ") ===
+        "Customs duty/Anton > Freight/Anton > Labour/Bala > Office rent/Bala",
+      `a partner's expenses sit together, biggest spender first (${rows.join(" > ")})`,
+    );
+
+    // Per-partner block: header row 9, partners 10-11, total 12.
+    check(
+      String(ws.getCell("A9").value) === "Partner" &&
+        String(ws.getCell("B9").value) === "Total",
+      `there is a per-partner block below the total (${String(ws.getCell("A9").value)})`,
+    );
+    check(String(ws.getCell("A10").value) === "Anton", "listing each partner");
+    check(
+      f(ws, "B10") === "SUMIF($B$3:$B$6,$A10,$C$3:$C$6)",
+      `their total is a SUMIF over the entry rows only (${f(ws, "B10")})`,
+    );
+    check(r(ws, "B10") === 400_000, "with the right cached figure");
+    check(
+      f(ws, "C10") === "COUNTIF($B$3:$B$6,$A10)" && r(ws, "C10") === 2,
+      `and a live entry count (${f(ws, "C10")})`,
+    );
+    check(
+      r(ws, "B12") === totals.expenses,
+      `the partner block totals the same as the entries (${String(r(ws, "B12"))})`,
+    );
+    check(r(ws, "C12") === 4, "and counts every entry");
+
+    const ranges = [f(ws, "B10"), f(ws, "C10")];
+    check(
+      ranges.every((formula) => !formula.includes("$7")),
+      "the per-partner ranges stop short of the Total row",
+    );
+  }
+
+  section("Expenses-only workbook: edge cases");
+  {
+    // Expenses but no turnover at all - the export must still work, since it
+    // never needed the turnover.
+    let noTurnover = emptyBalanceSheet();
+    noTurnover = addExpense(
+      noTurnover,
+      createExpense({ name: "Office rent", partner: "Bala", amount: 60_000 }),
+    );
+    const one = await buildExpensesXlsx(noTurnover);
+    const oneBook = new ExcelJS.Workbook();
+    await oneBook.xlsx.load(one as unknown as ArrayBuffer);
+    const ows = oneBook.getWorksheet("Expenses")!;
+    check(ows.getCell("C3").value === 60_000, "a sheet with no turnover still exports");
+    check(f(ows, "C4") === "SUM(C3:C3)", `with a total over the single row (${f(ows, "C4")})`);
+    check(r(ows, "C4") === 60_000, "and the right answer");
+    check(
+      String(ows.getCell("B3").value) === "Bala",
+      "an untagged expense keeps its partner, since that is what this sheet is for",
+    );
+
+    // No expenses: the route refuses this, but the builder must not produce a
+    // circular reference if it is ever reached another way.
+    const blank = await buildExpensesXlsx(emptyBalanceSheet());
+    const blankBook = new ExcelJS.Workbook();
+    await blankBook.xlsx.load(blank as unknown as ArrayBuffer);
+    const bws = blankBook.getWorksheet("Expenses")!;
+    const blankTotal = f(bws, "C4");
+    const rows = rangeRows(blankTotal);
+    check(
+      rows !== null && rows[1] < 4,
+      `an empty export still keeps the total outside its own SUM (${blankTotal})`,
+    );
+    const blankCells = await cachedCells(blank, 1);
+    check(blankCells.get("C4")?.cached === "0", "and caches it as 0");
+
+    // An expense arriving with no partner must still be attributable.
+    const parsed = parseBalanceSheet({
+      expenses: [{ name: "Mystery", amount: 500, partner: "" }],
+    });
+    check(parsed.expenses.length === 1, "a partnerless expense can exist in a loaded file");
+    const odd = await buildExpensesXlsx(parsed);
+    const oddBook = new ExcelJS.Workbook();
+    await oddBook.xlsx.load(odd as unknown as ArrayBuffer);
+    const dws = oddBook.getWorksheet("Expenses")!;
+    check(
+      String(dws.getCell("B3").value) === "Unassigned",
+      `it is labelled Unassigned rather than left blank (${String(dws.getCell("B3").value)})`,
+    );
+    // One expense -> entries on row 3, total row 4, partner header 6, partner 7.
+    check(
+      String(dws.getCell("A7").value) === "Unassigned",
+      `the per-partner block shifts up with the shorter table (${String(dws.getCell("A7").value)})`,
+    );
+    check(
+      r(dws, "B7") === 500,
+      `and the per-partner SUMIF still finds it (${String(r(dws, "B7"))})`,
+    );
+  }
+
+  section("The export route serves both scopes");
+  {
+    const jsonReq = (body: unknown): NextRequest =>
+      new Request("http://localhost/api/balance-export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }) as unknown as NextRequest;
+
+    const XLSX_TYPE =
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+    const full = await balanceExportPost(jsonReq({ scope: "full", sheet }));
+    check(full.status === 200, `the full sheet is served (${full.status})`);
+    check(
+      full.headers.get("Content-Type") === XLSX_TYPE,
+      "as a spreadsheet, not as JSON",
+    );
+    check(
+      (full.headers.get("Content-Disposition") ?? "").includes("Balance Sheet"),
+      `named as the balance sheet (${full.headers.get("Content-Disposition")})`,
+    );
+    const fullBook = new ExcelJS.Workbook();
+    await fullBook.xlsx.load(await full.arrayBuffer());
+    check(fullBook.worksheets.length === 5, `with five tabs (${fullBook.worksheets.length})`);
+
+    const only = await balanceExportPost(jsonReq({ scope: "expenses", sheet }));
+    check(only.status === 200, `the expenses-only sheet is served (${only.status})`);
+    check(
+      (only.headers.get("Content-Disposition") ?? "").includes("Expenses"),
+      `named for the expenses (${only.headers.get("Content-Disposition")})`,
+    );
+    const onlyBook = new ExcelJS.Workbook();
+    await onlyBook.xlsx.load(await only.arrayBuffer());
+    check(onlyBook.worksheets.length === 1, `with one tab (${onlyBook.worksheets.length})`);
+    check(
+      onlyBook.worksheets[0].getCell("C3").value === 150_000,
+      "and the expenses in it",
+    );
+
+    // The sheet used to be posted as the whole body.
+    const legacy = await balanceExportPost(jsonReq(sheet));
+    check(legacy.status === 200, `a sheet posted as the bare body still works (${legacy.status})`);
+
+    // An unrecognised scope must not silently hand over the whole sheet.
+    const odd = await balanceExportPost(jsonReq({ scope: "nonsense", sheet }));
+    const oddBook = new ExcelJS.Workbook();
+    await oddBook.xlsx.load(await odd.arrayBuffer());
+    check(
+      odd.status === 200 && oddBook.worksheets.length === 5,
+      "an unknown scope falls back to the full sheet rather than erroring",
+    );
+
+    section("The export route refuses what it cannot build");
+    {
+      // Turnover but no expenses: the full sheet is fine, expenses-only is not.
+      let turnoverOnly = emptyBalanceSheet();
+      turnoverOnly = addTurnover(
+        turnoverOnly,
+        createTurnover({ containerId: A, turnover: 500 }),
+      );
+
+      const ok = await balanceExportPost(jsonReq({ scope: "full", sheet: turnoverOnly }));
+      check(ok.status === 200, `the full sheet exports with turnover alone (${ok.status})`);
+
+      const refused = await balanceExportPost(
+        jsonReq({ scope: "expenses", sheet: turnoverOnly }),
+      );
+      check(refused.status === 400, `the expenses-only export refuses (${refused.status})`);
+      const body = (await refused.json()) as { error?: string };
+      check(
+        (body.error ?? "").includes("no expenses"),
+        `saying why, rather than sending an empty file ("${body.error ?? ""}")`,
+      );
+
+      const nothing = await balanceExportPost(jsonReq({ scope: "full", sheet: emptyBalanceSheet() }));
+      check(nothing.status === 400, `an empty sheet is refused (${nothing.status})`);
+
+      for (const junk of [null, 42, "nonsense", { sheet: "not a sheet" }]) {
+        const res = await balanceExportPost(jsonReq(junk));
+        check(
+          res.status === 400,
+          `${JSON.stringify(junk)} is refused rather than crashing the route (${res.status})`,
+        );
+      }
+    }
+  }
+
   section("Export filename");
   {
     const name = balanceFilename("xlsx", new Date("2026-08-09T10:00:00Z"));
@@ -842,6 +1122,15 @@ async function xlsxChecks() {
       !balanceFilename("xlsx").includes("undefined") &&
         !Number.isNaN(Date.parse(balanceFilename("xlsx").slice(14, 24))),
       "and defaults to today when no date is given",
+    );
+    const expensesName = expensesFilename("xlsx", new Date("2026-08-09T10:00:00Z"));
+    check(
+      expensesName === "Expenses 2026-08-09.xlsx",
+      `the expenses export is named so it cannot be mistaken for the full sheet (${expensesName})`,
+    );
+    check(
+      expensesName !== balanceFilename("xlsx", new Date("2026-08-09T10:00:00Z")),
+      "and the two exports never collide in a downloads folder",
     );
   }
 
