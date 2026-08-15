@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   buildBuyerPriceList,
+  buyerPriceFilename,
   clampNumber,
   LIMITS,
   type OrderItem,
@@ -17,11 +18,6 @@ interface GenerateBody {
   items?: unknown;
   buyer?: unknown;
   refNo?: unknown;
-}
-
-function safeFilename(title: string): string {
-  const base = title.replace(/[^\w\d\- ]+/g, "").trim() || "Order";
-  return `${base} - Buyer Price List.pdf`;
 }
 
 export async function POST(req: NextRequest) {
@@ -93,7 +89,7 @@ export async function POST(req: NextRequest) {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${safeFilename(title)}"`,
+        "Content-Disposition": `attachment; filename="${buyerPriceFilename(title)}"`,
         "Cache-Control": "no-store",
       },
     });

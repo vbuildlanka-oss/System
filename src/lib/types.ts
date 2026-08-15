@@ -147,3 +147,31 @@ export function formatLKR(value: number): string {
     })
   );
 }
+
+
+/**
+ * The name a generated document is saved under.
+ *
+ * Shared by the pages and the routes that build the files. The browser sets the
+ * name from the click, the route sets it in Content-Disposition, and if the two
+ * were written separately they would drift - which is how a file ends up on disk
+ * called something other than what the page promised.
+ *
+ * Only characters that survive every operating system are kept, so a title with
+ * a slash or a colon in it cannot produce a name Windows refuses to save.
+ */
+export function documentFilename(
+  title: string,
+  label = "",
+  ext = "pdf",
+): string {
+  const clean = (s: string) => s.replace(/[^\w\d\- ]+/g, " ").replace(/\s+/g, " ").trim();
+  const base = clean(title) || "Order";
+  const suffix = clean(label);
+  return `${suffix ? `${base} - ${suffix}` : base}.${ext}`;
+}
+
+/** `<Order number> - Buyer Price List.pdf` */
+export function buyerPriceFilename(title: string): string {
+  return documentFilename(title, "Buyer Price List");
+}

@@ -21,6 +21,16 @@ the recalculated table, and download a clean, buyer-ready price list PDF.
 - **Live preview** table before you download
 - **Validation**: the app compares its computed total against the total printed
   on the source PDF and warns you if they don't match
+- **Order number**, read out of the uploaded file's name and editable. It
+  headlines the buyer's copy and names the download
+  (`Sri Lanka Order 03 - Buyer Price List.pdf`), so a file can be matched back to
+  its order at a glance. If the file name also contains a container ID, it is
+  removed before the order number is read — otherwise the container's digits would
+  be taken as the order number.
+- **The buyer never sees a container ID.** This document goes out, so the
+  container is kept off it: not in the heading, not in the file name, and ignored
+  if one is sent to the route. The suite reads the generated PDF's text back and
+  fails if it appears.
 - **Buyer details**: name and phone are printed at the top of the PDF, with an
   auto-numbered (editable) reference
 - **Download** a branded, multi-page PDF
@@ -370,6 +380,7 @@ npx tsx scripts/verify-refno.ts         # references: device tags, uniqueness
 npx tsx scripts/verify-request.ts       # buyer requests: matching, supplying, files
 npx tsx scripts/verify-balance.ts       # balance sheet: profit scopes, workbooks, import
 npx tsx scripts/verify-appdata.ts       # saved data: listing, backup, clearing
+npx tsx scripts/verify-shipment.ts      # order number + container: names, files, privacy
 ```
 
 ---

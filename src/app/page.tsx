@@ -12,7 +12,13 @@ import {
   X,
 } from "lucide-react";
 import type { ParsedOrder } from "@/lib/types";
-import { buildBuyerPriceList, formatLKR } from "@/lib/types";
+import {
+  buildBuyerPriceList,
+  buyerPriceFilename,
+  formatLKR,
+  LIMITS,
+} from "@/lib/types";
+import { shipmentFromFilename } from "@/lib/shipment";
 import {
   EMPTY_BUYER,
   hasBuyerInfo,
@@ -30,6 +36,11 @@ export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [parsed, setParsed] = useState<ParsedOrder | null>(null);
   const [markup, setMarkup] = useState<number>(DEFAULT_MARKUP);
+  /**
+   * The order number. Headlines the buyer's document and names the file, so it
+   * is editable rather than whatever happened to be typed inside the sheet.
+   */
+  const [orderNumber, setOrderNumber] = useState("");
   const [buyer, setBuyer] = useState<Buyer>(EMPTY_BUYER);
   const [refNo, setRefNo] = useState("");
   // The reference this sheet was generated with, so its own number never
@@ -45,10 +56,10 @@ export default function Home() {
   const priceList = useMemo(() => {
     if (!parsed) return null;
     return buildBuyerPriceList(
-      { title: parsed.title, items: parsed.items },
+      { title: orderNumber.trim() || parsed.title, items: parsed.items },
       Number.isFinite(markup) ? markup : 0,
     );
-  }, [parsed, markup]);
+  }, [parsed, orderNumber, markup]);
 
   const handleFile = useCallback(async (f: File) => {
     setError(null);
@@ -63,7 +74,16 @@ export default function Home() {
       if (!res.ok) {
         throw new Error(data.error || "Failed to read the PDF.");
       }
-      setParsed(data as ParsedOrder);
+      const loaded = data as ParsedOrder;
+      setParsed(loaded);
+      // Prefer the order number in the file name over the heading inside the
+      // sheet, since that is what the file was tracked by. Read through
+      // shipmentFromFilename, which takes a container ID out of the name first:
+      // its digits would otherwise be read as the order number, and a container
+      // has no business on a buyer's document.
+      setOrderNumber(
+        shipmentFromFilename(f.name).orderNumber || loaded.title,
+      );
       // Each newly loaded sheet gets its own document reference.
       const ref = nextRefNo();
       setRefNo(ref);
@@ -88,6 +108,7 @@ export default function Home() {
 
   const download = useCallback(async () => {
     if (!parsed) return;
+    const title = orderNumber.trim() || parsed.title;
     setDownloading(true);
     setError(null);
     try {
@@ -95,7 +116,7 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          title: parsed.title,
+          title: title,
           markup: Number.isFinite(markup) ? markup : 0,
           items: parsed.items,
           buyer,
@@ -110,7 +131,7 @@ export default function Home() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${parsed.title} - Buyer Price List.pdf`;
+      a.download = buyerPriceFilename(title);
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -126,13 +147,14 @@ export default function Home() {
     } finally {
       setDownloading(false);
     }
-  }, [parsed, markup, buyer, refNo]);
+  }, [parsed, orderNumber, markup, buyer, refNo]);
 
   const reset = useCallback(() => {
     setFile(null);
     setParsed(null);
     setError(null);
     setMarkup(DEFAULT_MARKUP);
+    setOrderNumber("");
     setBuyer(EMPTY_BUYER);
     setRefNo("");
     setGeneratedRef("");
@@ -234,7 +256,7 @@ export default function Home() {
                 </div>
                 <div className="min-w-0">
                   <p className="truncate font-semibold text-gray-900">
-                    {parsed.title}
+                    {file?.name ?? parsed.title}
                   </p>
                   <p className="text-sm text-gray-500">
                     {parsed.items.length} items · {parsed.totalQty} bags
@@ -248,6 +270,32 @@ export default function Home() {
                 <RefreshCw className="h-4 w-4" />
                 New upload
               </button>
+            </div>
+
+            {/* Order number: the heading on the buyer's copy and the file name */}
+            <div className="mt-4 border-t border-gray-100 pt-4">
+              <label
+                htmlFor="order-number"
+                className="block text-sm font-medium text-gray-700"
+              >
+                Order number
+              </label>
+              <input
+                id="order-number"
+                type="text"
+                value={orderNumber}
+                onChange={(e) => setOrderNumber(e.target.value)}
+                placeholder={parsed.title || "Sri Lanka 01"}
+                maxLength={LIMITS.title}
+                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm transition focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 sm:max-w-md"
+              />
+              <p className="mt-1.5 text-xs text-gray-500">
+                Taken from the file name, and used as the heading on the
+                buyer&apos;s copy. Downloads as{" "}
+                <span className="font-medium text-gray-600">
+                  {buyerPriceFilename(orderNumber.trim() || parsed.title)}
+                </span>
+              </p>
             </div>
 
             {/* Validation notice */}

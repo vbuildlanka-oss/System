@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   buildSheetFromRows,
   clampNumber,
+  documentFilename,
   LIMITS,
   type EditableRow,
 } from "@/lib/types";
@@ -26,12 +27,6 @@ interface ExportBody {
   rows?: unknown;
   buyer?: unknown;
   refNo?: unknown;
-}
-
-function safeFilename(title: string, label: string): string {
-  const base = title.replace(/[^\w\d\- ]+/g, "").trim() || "Order";
-  const suffix = label.replace(/[^\w\d\- ]+/g, "").trim();
-  return suffix ? `${base} - ${suffix}.pdf` : `${base}.pdf`;
 }
 
 export async function POST(req: NextRequest) {
@@ -97,7 +92,7 @@ export async function POST(req: NextRequest) {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${safeFilename(title, label)}"`,
+        "Content-Disposition": `attachment; filename="${documentFilename(title, label)}"`,
         "Cache-Control": "no-store",
       },
     });
