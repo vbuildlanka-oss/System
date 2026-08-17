@@ -18,7 +18,7 @@ import { buildBalanceXlsx } from "../src/lib/balanceXlsx";
 import { buildExpensesXlsx } from "../src/lib/expensesXlsx";
 import { totalRow } from "../src/lib/xlsxKit";
 import { POST as balanceExportPost } from "../src/app/api/balance-export/route";
-import { POST as expensesImportPost } from "../src/app/api/expenses-import/route";
+import { POST as balanceImportPost } from "../src/app/api/balance-import/route";
 import { xlsxToGrids } from "../src/lib/parseTabular";
 import {
   addImportedExpenses,
@@ -528,8 +528,9 @@ async function xlsxChecks() {
 
   const names = book.worksheets.map((w) => w.name);
   check(
-    names.join(" | ") === "Summary | Profit by Container | Expenses | Turnover | By Partner",
-    `five tabs, in reading order (${names.join(" | ")})`,
+    names.join(" | ") ===
+      "Summary | Profit by Container | Expenses | Turnover | By Partner | Balances",
+    `six tabs, in reading order (${names.join(" | ")})`,
   );
 
   const sum = book.getWorksheet("Summary")!;
@@ -768,7 +769,7 @@ async function xlsxChecks() {
 
     const bex = blankBook.getWorksheet("Expenses")!;
     const btv = blankBook.getWorksheet("Turnover")!;
-    check(blankBook.worksheets.length === 5, "all five tabs are still there");
+    check(blankBook.worksheets.length === 6, "all six tabs are still there");
     check(totalRow(0) === 4, `the total drops to row 4, leaving a blank row (${totalRow(0)})`);
 
     const exFormula = f(bex, "E4");
@@ -1074,7 +1075,7 @@ async function xlsxChecks() {
     );
     const fullBook = new ExcelJS.Workbook();
     await fullBook.xlsx.load(await full.arrayBuffer());
-    check(fullBook.worksheets.length === 5, `with five tabs (${fullBook.worksheets.length})`);
+    check(fullBook.worksheets.length === 6, `with six tabs (${fullBook.worksheets.length})`);
 
     const only = await balanceExportPost(jsonReq({ scope: "expenses", sheet }));
     check(only.status === 200, `the expenses-only sheet is served (${only.status})`);
@@ -1099,7 +1100,7 @@ async function xlsxChecks() {
     const oddBook = new ExcelJS.Workbook();
     await oddBook.xlsx.load(await odd.arrayBuffer());
     check(
-      odd.status === 200 && oddBook.worksheets.length === 5,
+      odd.status === 200 && oddBook.worksheets.length === 6,
       "an unknown scope falls back to the full sheet rather than erroring",
     );
 
@@ -1513,8 +1514,9 @@ async function xlsxChecks() {
     const upload = async (name: string, body: Buffer | string) => {
       const form = new FormData();
       form.append("file", new File([body as unknown as BlobPart], name));
-      return expensesImportPost(
-        new Request("http://localhost/api/expenses-import", {
+      form.append("scope", "expenses");
+      return balanceImportPost(
+        new Request("http://localhost/api/balance-import", {
           method: "POST",
           body: form,
         }) as unknown as NextRequest,
@@ -1561,8 +1563,8 @@ async function xlsxChecks() {
       "and the reply says why rather than just failing",
     );
 
-    const noFile = await expensesImportPost(
-      new Request("http://localhost/api/expenses-import", {
+    const noFile = await balanceImportPost(
+      new Request("http://localhost/api/balance-import", {
         method: "POST",
         body: new FormData(),
       }) as unknown as NextRequest,

@@ -239,7 +239,33 @@ belongs to.
   container IDs are normalised to uppercase (`gaou 744174-0` → `GAOU7441740`) and
   a bad ISO 6346 check digit raises a warning without blocking you — it is a
   bookkeeping label, not an export.
-- **Excel export** — a five-tab workbook, and every figure on it is a live
+- **Balances to be paid** — a ledger of what is still outstanding, in both
+  directions: money you still owe a partner or supplier, and money a buyer still
+  owes you. Record the **total** and **how much has been paid**; what is left is
+  worked out for you, never typed.
+
+  - **Both directions in one ledger**, so the two are never reconciled by hand. A
+    party who is both owed and owing appears once, with both figures.
+  - **Overdue** means past its date with something still left. A balance due today
+    is not overdue, one with no date never is, and a settled one never is however
+    late it was paid.
+  - **Not profit.** Outstanding balances are deliberately absent from the net
+    profit: the expense behind one may already be recorded, and counting both
+    would count the same money twice. They are reported as a *position* —
+    still to pay, still to receive, net — alongside the profit, never inside it.
+  - **Carry previous balances in** with **Import from Excel**. Fill in the
+    **Balances** tab of an export, or type your own sheet: `Party`, plus a
+    `Total`/`Balance`/`Outstanding` column, plus any of `Paid`, `Due` or
+    `Direction`. `Rs 150,000.00` and `1 250` both read as money, and dates are
+    understood.
+  - **A sheet of expenses cannot be imported as debts.** "Partner" is a party and
+    "Amount" is an amount, so an expenses sheet would otherwise satisfy a naive
+    test and turn every expense into a debt. A balances sheet has to carry
+    something only a balances sheet has, and if it does not, the reply says so.
+  - Everything skipped is listed with its reason — a credit in brackets, a paid
+    figure larger than the total, a row already settled.
+
+- **Excel export** — a six-tab workbook, and every figure on it is a live
   formula:
 
   | Tab | What it holds |
@@ -249,6 +275,7 @@ belongs to.
   | Expenses | one row per expense — date, name, partner, container, amount, note |
   | Turnover | one row per turnover entry |
   | By Partner | spend, entry count and share for each partner |
+  | Balances | what is outstanding — `Outstanding` is `Total - Paid`, live |
 
   Amounts are typed on the **Expenses** and **Turnover** tabs only. Everything
   else is `SUMIF`, `COUNTIF` and arithmetic over those two tabs, so changing an
@@ -381,6 +408,7 @@ npx tsx scripts/verify-request.ts       # buyer requests: matching, supplying, f
 npx tsx scripts/verify-balance.ts       # balance sheet: profit scopes, workbooks, import
 npx tsx scripts/verify-appdata.ts       # saved data: listing, backup, clearing
 npx tsx scripts/verify-shipment.ts      # order number + container: names, files, privacy
+npx tsx scripts/verify-dues.ts          # balances to be paid: position, workbook, import
 ```
 
 ---

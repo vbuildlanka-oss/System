@@ -21,7 +21,22 @@
 import { cellText, type Cell } from "./parseTabular";
 import { normalizeContainerNumber } from "./container";
 import { clampNumber, LIMITS } from "./types";
-import { GENERAL_LABEL } from "./xlsxKit";
+import {
+  AMOUNT_HEADINGS,
+  CONTAINER_HEADINGS,
+  describe,
+  fold,
+  headings,
+  heading,
+  HEADER_SEARCH_ROWS,
+  isBlankRow,
+  isGeneralLabel,
+  isTotalLabel,
+  markDuplicatesBy,
+  PARTY_HEADINGS,
+  readAmount,
+  type SkippedRow,
+} from "./sheetImport";
 import {
   createExpense,
   MAX_ENTRIES,
@@ -29,8 +44,7 @@ import {
   type Expense,
 } from "./balanceSheet";
 
-/** How far down the sheet to look for the heading row. */
-const HEADER_SEARCH_ROWS = 30;
+export type { SkippedRow };
 
 export interface ImportedRow {
   name: string;
@@ -41,13 +55,6 @@ export interface ImportedRow {
   row: number;
   /** True when an identical expense is already on the balance sheet. */
   duplicate: boolean;
-}
-
-export interface SkippedRow {
-  row: number;
-  /** A short rendering of what was on the row. */
-  detail: string;
-  reason: string;
 }
 
 export interface ExpenseImport {
@@ -63,33 +70,7 @@ export interface ExpenseImport {
 
 /* ----------------------------- column headings ---------------------------- */
 
-/** "Amount (LKR):" -> "amount". Units and trailing colons are noise. */
-function heading(cell: Cell): string {
-  return cellText(cell)
-    .replace(/\s*[([][^)\]]*[)\]]\s*$/, "")
-    .replace(/[:*]+$/, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
-// Matched as whole headings rather than by substring, so that "Expense Amount"
-// is read as the amount and not as the expense name.
-const AMOUNT_HEADINGS = new Set([
-  "amount",
-  "expense amount",
-  "amount spent",
-  "value",
-  "cost",
-  "total",
-  "spend",
-  "spent",
-  "sum",
-  "lkr",
-  "rs",
-  "price",
-  "debit",
-]);
+/** What the thing was for. The one heading only this reader cares about. */
 const NAME_HEADINGS = new Set([
   "expense",
   "expense name",
@@ -104,29 +85,6 @@ const NAME_HEADINGS = new Set([
   "narration",
   "purpose",
   "reason",
-]);
-const PARTNER_HEADINGS = new Set([
-  "partner",
-  "partner name",
-  "paid by",
-  "paid to",
-  "person",
-  "member",
-  "shareholder",
-  "who",
-  "supplier",
-  "vendor",
-]);
-const CONTAINER_HEADINGS = new Set([
-  "container",
-  "container id",
-  "container no",
-  "container no.",
-  "container number",
-  "container#",
-  "container code",
-  "cntr",
-  "shipment",
 ]);
 
 interface Columns {
@@ -146,7 +104,7 @@ function columnsFrom(row: Cell[]): Columns | null {
     // claimed by the name column.
     if (cols.amount === -1 && AMOUNT_HEADINGS.has(text)) cols.amount = c;
     else if (cols.container === -1 && CONTAINER_HEADINGS.has(text)) cols.container = c;
-    else if (cols.partner === -1 && PARTNER_HEADINGS.has(text)) cols.partner = c;
+    else if (cols.partner === -1 && PARTY_HEADINGS.has(text)) cols.partner = c;
     else if (cols.name === -1 && NAME_HEADINGS.has(text)) cols.name = c;
   });
   // A heading row has to say what the thing is and what it cost. Without both,
@@ -160,77 +118,13 @@ function columnsFrom(row: Cell[]): Columns | null {
  * reading on would count the same money twice.
  */
 function isSummaryHeading(row: Cell[]): boolean {
-  const texts = row.map(heading).filter((t) => t !== "");
+  const texts = headings(row);
   if (texts.length === 0) return false;
-  const hasPartner = texts.some((t) => PARTNER_HEADINGS.has(t));
+  const hasParty = texts.some((t) => PARTY_HEADINGS.has(t));
   const hasTally = texts.some(
     (t) => t === "total" || t === "entries" || t === "count",
   );
-  return hasPartner && hasTally;
-}
-
-/* -------------------------------- row values ------------------------------- */
-
-function isBlankRow(row: Cell[]): boolean {
-  return !row.some((c) => cellText(c) !== "");
-}
-
-/** A row that totals the rows above it rather than being an expense of its own. */
-function isTotalLabel(text: string): boolean {
-  return /^(sub)?totals?$/i.test(text) || /\b(sub)?total$/i.test(text);
-}
-
-interface AmountRead {
-  value: number | null;
-  /** Written in brackets, which in a ledger means a credit. */
-  bracketed: boolean;
-}
-
-/**
- * "Rs35,000.00" | "35 000" | 35000 -> 35000.
- *
- * Brackets are reported rather than stripped: "(500)" is a credit in every
- * ledger, and silently reading it as a cost of 500 would invert the entry.
- */
-function readAmount(cell: Cell): AmountRead {
-  if (typeof cell === "number") {
-    return { value: Number.isFinite(cell) ? cell : null, bracketed: false };
-  }
-  const text = cellText(cell);
-  if (text === "") return { value: null, bracketed: false };
-
-  const bracketed = /^\(.*\)$/.test(text);
-  const cleaned = text.replace(/[^\d.-]/g, "");
-  if (cleaned === "" || cleaned === "-" || cleaned === ".") {
-    return { value: null, bracketed };
-  }
-  const n = Number(cleaned);
-  if (!Number.isFinite(n)) return { value: null, bracketed };
-  return { value: bracketed ? -Math.abs(n) : n, bracketed };
-}
-
-/** The container label written for an expense that belongs to no container. */
-function isGeneralLabel(text: string): boolean {
-  const t = text.trim().toLowerCase();
-  return (
-    t === GENERAL_LABEL ||
-    t === "general" ||
-    t === "(general)" ||
-    t === "general overhead" ||
-    t === "overhead" ||
-    t === "none" ||
-    t === "n/a" ||
-    t === "-"
-  );
-}
-
-/** A short, safe rendering of a row for the "skipped" list. */
-function describe(row: Cell[]): string {
-  const text = row
-    .map((c) => cellText(c))
-    .filter((t) => t !== "")
-    .join(" | ");
-  return text.length > 70 ? `${text.slice(0, 67)}...` : text;
+  return hasParty && hasTally;
 }
 
 /* --------------------------------- parsing -------------------------------- */
@@ -390,51 +284,25 @@ export function pickExpenseSheet(
 
 /* ------------------------------- duplicates ------------------------------- */
 
-function dupKey(
-  name: string,
-  partner: string,
-  containerId: string,
-  amount: number,
-): string {
-  const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
-  return `${norm(name)}|${norm(partner)}|${containerId}|${amount}`;
+/** What makes two expenses the same entry. */
+function dupKey(row: {
+  name: string;
+  partner: string;
+  containerId: string;
+  amount: number;
+}): string {
+  return `${fold(row.name)}|${fold(row.partner)}|${row.containerId}|${row.amount}`;
 }
 
 /**
- * Flag rows that are already on the sheet.
- *
- * Counted rather than merely looked up: if the sheet already has one 5,000
- * freight charge for a partner and the file has two, the second is genuinely new
- * and is left unflagged. Treating the key as a set would hide it.
- *
- * A duplicate is not refused, only labelled, because two identical expenses are
- * perfectly possible. The choice of what to do belongs to whoever is looking at
- * the preview.
+ * Flag rows that are already on the sheet. Counted, not merely matched - see
+ * markDuplicatesBy.
  */
 export function markDuplicates(
   rows: ImportedRow[],
   existing: Expense[],
 ): ImportedRow[] {
-  const remaining = new Map<string, number>();
-  for (const expense of existing) {
-    const key = dupKey(
-      expense.name,
-      expense.partner,
-      expense.containerId,
-      expense.amount,
-    );
-    remaining.set(key, (remaining.get(key) ?? 0) + 1);
-  }
-
-  return rows.map((row) => {
-    const key = dupKey(row.name, row.partner, row.containerId, row.amount);
-    const left = remaining.get(key) ?? 0;
-    if (left > 0) {
-      remaining.set(key, left - 1);
-      return { ...row, duplicate: true };
-    }
-    return { ...row, duplicate: false };
-  });
+  return markDuplicatesBy(rows, existing.map(dupKey), dupKey);
 }
 
 /** The rows that are not already on the sheet. */

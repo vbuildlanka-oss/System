@@ -19,11 +19,24 @@ import {
   Loader2,
   Sheet as SheetIcon,
   Upload,
+  Wallet,
+  CalendarClock,
 } from "lucide-react";
 import {
+  addBalanceDue,
   addExpense,
   addTurnover,
+  balanceDueStatus,
+  balanceDueTotals,
   balanceFilename,
+  balanceOutstanding,
+  byParty,
+  checkBalanceDue,
+  createBalanceDue,
+  isBalanceOverdue,
+  partyNames,
+  removeBalanceDue,
+  updateBalanceDue,
   balanceToCsv,
   balanceTotals,
   byContainer,
@@ -52,18 +65,26 @@ import {
   type ImportedRow,
   type SkippedRow,
 } from "@/lib/expensesImport";
+import {
+  addImportedBalances,
+  markBalanceDuplicates,
+  newBalances,
+  type ImportedBalance,
+} from "@/lib/balancesImport";
 import { checkContainerNumber } from "@/lib/container";
 import { formatLKR } from "@/lib/types";
 import { cn } from "@/lib/cn";
 
 /** A spreadsheet that has been read but not yet accepted onto the sheet. */
-interface PendingImport {
+interface PendingBase {
   fileName: string;
   sheetName: string;
-  rows: ImportedRow[];
   skipped: SkippedRow[];
   skippedTotal: number;
 }
+type PendingImport =
+  | (PendingBase & { scope: "expenses"; rows: ImportedRow[] })
+  | (PendingBase & { scope: "balances"; rows: ImportedBalance[] });
 
 export default function BalancePage() {
   const [sheet, setSheet] = useState<BalanceSheet | null>(null);
@@ -74,7 +95,9 @@ export default function BalancePage() {
   const [building, setBuilding] = useState<"full" | "expenses" | null>(null);
   const jsonRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
-  const [importing, setImporting] = useState(false);
+  const balanceImportRef = useRef<HTMLInputElement>(null);
+  /** Which import is reading, so only that button spins. */
+  const [importing, setImporting] = useState<"expenses" | "balances" | null>(null);
   /**
    * A read file waiting to be accepted. Nothing is added until it is, so an
    * unexpected file can be looked at and thrown away rather than undone.
@@ -85,6 +108,15 @@ export default function BalancePage() {
   const [tvContainer, setTvContainer] = useState("");
   const [tvAmount, setTvAmount] = useState("");
   const [tvNote, setTvNote] = useState("");
+
+  // Balance-to-be-paid form
+  const [bdParty, setBdParty] = useState("");
+  const [bdDirection, setBdDirection] = useState<"payable" | "receivable">("payable");
+  const [bdAmount, setBdAmount] = useState("");
+  const [bdPaid, setBdPaid] = useState("");
+  const [bdContainer, setBdContainer] = useState("");
+  const [bdOrder, setBdOrder] = useState("");
+  const [bdDue, setBdDue] = useState("");
 
   // Expense form
   const [exName, setExName] = useState("");
@@ -115,6 +147,25 @@ export default function BalancePage() {
     () => byPartner(sheet ?? emptyBalanceSheet()),
     [sheet],
   );
+  const dues = useMemo(
+    () => balanceDueTotals(sheet ?? emptyBalanceSheet()),
+    [sheet],
+  );
+  const parties = useMemo(
+    () => byParty(sheet ?? emptyBalanceSheet()),
+    [sheet],
+  );
+  const knownParties = useMemo(
+    () => partyNames(sheet ?? emptyBalanceSheet()),
+    [sheet],
+  );
+  /** Soonest due first, and anything undated last: a deadline outranks a note. */
+  const sortedBalances = useMemo(() => {
+    if (!sheet) return [];
+    return [...sheet.balances].sort(
+      (a, b) => (a.dueAt || "9999").localeCompare(b.dueAt || "9999"),
+    );
+  }, [sheet]);
   const knownPartners = useMemo(
     () => partnerNames(sheet ?? emptyBalanceSheet()),
     [sheet],
@@ -173,6 +224,50 @@ export default function BalancePage() {
       `Recorded ${formatLKR(amount as number)} turnover for ${checkContainerNumber(tvContainer).value}.`,
     );
   }, [sheet, tvContainer, tvAmount, tvNote, persist]);
+
+  const submitBalance = useCallback(() => {
+    if (!sheet) return;
+    const amount = bdAmount.trim() === "" ? null : Number(bdAmount);
+    const paid = bdPaid.trim() === "" ? 0 : Number(bdPaid);
+    const check = checkBalanceDue({ party: bdParty, amount, paid });
+    if (!check.ok) {
+      setError(check.message ?? "That balance cannot be added.");
+      return;
+    }
+    persist(
+      addBalanceDue(
+        sheet,
+        createBalanceDue({
+          party: bdParty,
+          direction: bdDirection,
+          amount,
+          paid,
+          containerId: bdContainer,
+          orderNumber: bdOrder,
+          dueAt: bdDue,
+        }),
+      ),
+    );
+    setBdAmount("");
+    setBdPaid("");
+    setBdDue("");
+    // The party, direction and container usually repeat, so they stay put.
+    setError(null);
+    const left = (amount as number) - paid;
+    setNotice(
+      `${bdDirection === "receivable" ? "Owed to us by" : "We owe"} ${bdParty.trim()}: ${formatLKR(left)} outstanding.`,
+    );
+  }, [
+    sheet,
+    bdParty,
+    bdDirection,
+    bdAmount,
+    bdPaid,
+    bdContainer,
+    bdOrder,
+    bdDue,
+    persist,
+  ]);
 
   const submitExpense = useCallback(() => {
     if (!sheet) return;
@@ -259,22 +354,23 @@ export default function BalancePage() {
   }, [sheet, downloadBlob]);
 
   /**
-   * Read an expenses spreadsheet, but do not add anything yet.
+   * Read a spreadsheet, but do not add anything yet.
    *
    * Duplicates are worked out here rather than on the server, because this is
    * the side that holds the balance sheet to compare against.
    */
   const importFile = useCallback(
-    async (file: File) => {
+    async (file: File, scope: "expenses" | "balances") => {
       if (!sheet) return;
       setError(null);
       setNotice(null);
       setPending(null);
-      setImporting(true);
+      setImporting(scope);
       try {
         const fd = new FormData();
         fd.append("file", file);
-        const res = await fetch("/api/expenses-import", {
+        fd.append("scope", scope);
+        const res = await fetch("/api/balance-import", {
           method: "POST",
           body: fd,
         });
@@ -282,28 +378,43 @@ export default function BalancePage() {
           error?: string;
           fileName?: string;
           sheetName?: string;
-          rows?: ImportedRow[];
+          rows?: unknown[];
           skipped?: SkippedRow[];
           skippedTotal?: number;
         };
         if (!res.ok) throw new Error(data.error || "Could not read that file.");
 
-        const rows = markDuplicates(data.rows ?? [], sheet.expenses);
-        setPending({
+        const base = {
           fileName: data.fileName ?? file.name,
           sheetName: data.sheetName ?? "",
-          rows,
           skipped: data.skipped ?? [],
           skippedTotal: data.skippedTotal ?? (data.skipped ?? []).length,
-        });
+        };
+        if (scope === "balances") {
+          setPending({
+            ...base,
+            scope: "balances",
+            rows: markBalanceDuplicates(
+              (data.rows ?? []) as ImportedBalance[],
+              sheet.balances,
+            ),
+          });
+        } else {
+          setPending({
+            ...base,
+            scope: "expenses",
+            rows: markDuplicates((data.rows ?? []) as ImportedRow[], sheet.expenses),
+          });
+        }
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "Could not read that file.",
         );
       } finally {
-        setImporting(false);
+        setImporting(null);
         // Cleared so picking the same file again still fires onChange.
         if (importRef.current) importRef.current.value = "";
+        if (balanceImportRef.current) balanceImportRef.current.value = "";
       }
     },
     [sheet],
@@ -313,18 +424,38 @@ export default function BalancePage() {
   const commitImport = useCallback(
     (which: "new" | "all") => {
       if (!sheet || !pending) return;
-      const chosen = which === "new" ? newRows(pending.rows) : pending.rows;
-      if (chosen.length === 0) {
+
+      const fresh =
+        pending.scope === "balances"
+          ? newBalances(pending.rows).length
+          : newRows(pending.rows).length;
+
+      const result =
+        pending.scope === "balances"
+          ? addImportedBalances(
+              sheet,
+              which === "new" ? newBalances(pending.rows) : pending.rows,
+              pending.fileName,
+            )
+          : addImportedExpenses(
+              sheet,
+              which === "new" ? newRows(pending.rows) : pending.rows,
+              pending.fileName,
+            );
+
+      const chosenCount = which === "new" ? fresh : pending.rows.length;
+      if (chosenCount === 0) {
         setError("There is nothing new in that file to add.");
         return;
       }
-      const result = addImportedExpenses(sheet, chosen, pending.fileName);
+
       persist(result.sheet);
       setPending(null);
       setError(null);
-      const repeats = chosen.length - newRows(pending.rows).length;
+      const noun = pending.scope === "balances" ? "balance" : "expense";
+      const repeats = chosenCount - fresh;
       setNotice(
-        `Added ${result.added} expense${result.added === 1 ? "" : "s"} from ${pending.fileName}.` +
+        `Added ${result.added} ${noun}${result.added === 1 ? "" : "s"} from ${pending.fileName}.` +
           (repeats > 0
             ? ` ${repeats} of them already matched an entry on the sheet.`
             : "") +
@@ -432,7 +563,17 @@ export default function BalancePage() {
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0];
-          if (f) importFile(f);
+          if (f) importFile(f, "expenses");
+        }}
+      />
+      <input
+        ref={balanceImportRef}
+        type="file"
+        accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) importFile(f, "balances");
         }}
       />
 
@@ -717,20 +858,20 @@ export default function BalancePage() {
           </p>
           <button
             onClick={() => importRef.current?.click()}
-            disabled={importing}
+            disabled={importing !== null}
             title="Read expenses from an XLSX or CSV file and add them to this sheet"
             className="absolute right-5 top-4 inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-40"
           >
-            {importing ? (
+            {importing === "expenses" ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
               <Upload className="h-3.5 w-3.5" />
             )}
-            {importing ? "Reading..." : "Import from Excel"}
+            {importing === "expenses" ? "Reading..." : "Import from Excel"}
           </button>
         </div>
 
-        {pending && (
+        {pending?.scope === "expenses" && (
           <ImportPreview
             pending={pending}
             onAddNew={() => commitImport("new")}
@@ -987,6 +1128,346 @@ export default function BalancePage() {
         )}
       </section>
 
+      {/* --------------------------- Balances to pay -------------------------- */}
+      <section className="mt-6 rounded-2xl border border-gray-200 bg-white shadow-sm">
+        <div className="relative border-b border-gray-100 px-5 py-4 pr-44">
+          <h2 className="flex items-center gap-2 font-semibold text-gray-900">
+            <Wallet className="h-4 w-4 text-brand-600" />
+            Balances to be paid
+          </h2>
+          <p className="mt-0.5 text-xs text-gray-500">
+            What is still outstanding, either way round. Record the total and how
+            much has been paid; what is left is worked out for you.
+          </p>
+          <button
+            onClick={() => balanceImportRef.current?.click()}
+            disabled={importing !== null}
+            title="Read balances from an XLSX or CSV file - use this to bring in previous balances"
+            className="absolute right-5 top-4 inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-40"
+          >
+            {importing === "balances" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Upload className="h-3.5 w-3.5" />
+            )}
+            {importing === "balances" ? "Reading..." : "Import from Excel"}
+          </button>
+        </div>
+
+        {pending?.scope === "balances" && (
+          <ImportPreview
+            pending={pending}
+            onAddNew={() => commitImport("new")}
+            onAddAll={() => commitImport("all")}
+            onCancel={() => setPending(null)}
+          />
+        )}
+
+        {/* Position, kept apart from the profit figures at the top of the page */}
+        <div className="grid grid-cols-2 gap-3 border-b border-gray-100 px-5 py-4 sm:grid-cols-4">
+          <Stat label="Still to pay" value={formatLKR(dues.payableOutstanding)} />
+          <Stat
+            label="Still to receive"
+            value={formatLKR(dues.receivableOutstanding)}
+          />
+          <Stat
+            label="Net position"
+            value={formatLKR(dues.net)}
+            tone={dues.net >= 0 ? "good" : "bad"}
+          />
+          <Stat
+            label="Overdue"
+            value={
+              dues.overdueCount === 0
+                ? "-"
+                : `${formatLKR(dues.overdueAmount)} (${dues.overdueCount})`
+            }
+            tone={dues.overdueCount > 0 ? "bad" : undefined}
+          />
+        </div>
+
+        {/* Add a balance */}
+        <div className="border-b border-gray-100 px-5 py-4">
+          <div className="grid gap-2 sm:grid-cols-12">
+            <input
+              value={bdParty}
+              onChange={(e) => setBdParty(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submitBalance()}
+              placeholder="Who it is with"
+              list="bs-parties"
+              maxLength={60}
+              className="rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none transition focus:border-brand-500 focus:ring-1 focus:ring-brand-500 sm:col-span-3"
+            />
+            <select
+              value={bdDirection}
+              onChange={(e) =>
+                setBdDirection(e.target.value === "receivable" ? "receivable" : "payable")
+              }
+              className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-brand-500 focus:ring-1 focus:ring-brand-500 sm:col-span-2"
+            >
+              <option value="payable">We owe</option>
+              <option value="receivable">Owed to us</option>
+            </select>
+            <input
+              value={bdAmount}
+              onChange={(e) => setBdAmount(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submitBalance()}
+              placeholder="Total"
+              type="number"
+              min="0"
+              className="rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none transition focus:border-brand-500 focus:ring-1 focus:ring-brand-500 sm:col-span-2"
+            />
+            <input
+              value={bdPaid}
+              onChange={(e) => setBdPaid(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submitBalance()}
+              placeholder="Paid so far"
+              type="number"
+              min="0"
+              className="rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none transition focus:border-brand-500 focus:ring-1 focus:ring-brand-500 sm:col-span-2"
+            />
+            <input
+              value={bdDue}
+              onChange={(e) => setBdDue(e.target.value)}
+              type="date"
+              title="Due date, if there is one"
+              className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 outline-none transition focus:border-brand-500 focus:ring-1 focus:ring-brand-500 sm:col-span-3"
+            />
+            <input
+              value={bdContainer}
+              onChange={(e) => setBdContainer(e.target.value.toUpperCase())}
+              placeholder="Container (optional)"
+              list="bs-containers"
+              className="rounded-lg border border-gray-300 px-3 py-2 font-mono text-xs outline-none transition focus:border-brand-500 focus:ring-1 focus:ring-brand-500 sm:col-span-4"
+            />
+            <input
+              value={bdOrder}
+              onChange={(e) => setBdOrder(e.target.value)}
+              placeholder="Order number (optional)"
+              maxLength={80}
+              className="rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none transition focus:border-brand-500 focus:ring-1 focus:ring-brand-500 sm:col-span-5"
+            />
+            <button
+              onClick={submitBalance}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-700 sm:col-span-3"
+            >
+              <Plus className="h-4 w-4" />
+              Add balance
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-gray-500">
+            Leave <span className="font-medium">Paid so far</span> empty for a
+            balance nothing has been paid against. These figures are a position,
+            not profit &mdash; they are deliberately left out of the net profit
+            above, since the expense behind one may already be recorded.
+          </p>
+        </div>
+
+        {/* The ledger */}
+        {sortedBalances.length === 0 ? (
+          <p className="px-5 py-8 text-center text-sm text-gray-500">
+            Nothing outstanding. Add a balance above, or bring previous balances
+            in with <span className="font-medium">Import from Excel</span>.
+          </p>
+        ) : (
+          <div className="preview-scroll overflow-x-auto">
+            <table className="w-full min-w-[820px] text-left text-sm">
+              <thead className="border-b border-gray-100 bg-gray-50/70 text-xs uppercase tracking-wide text-gray-500">
+                <tr>
+                  <th className="px-4 py-2 font-medium">Party</th>
+                  <th className="px-2 py-2 font-medium">Direction</th>
+                  <th className="px-2 py-2 text-right font-medium">Total</th>
+                  <th className="px-2 py-2 text-right font-medium">Paid</th>
+                  <th className="px-2 py-2 text-right font-medium">Outstanding</th>
+                  <th className="px-2 py-2 font-medium">Due</th>
+                  <th className="px-2 py-2 font-medium">Container</th>
+                  <th className="px-2 py-2" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {sortedBalances.map((balance) => {
+                  const left = balanceOutstanding(balance);
+                  const overdue = isBalanceOverdue(balance);
+                  const status = balanceDueStatus(balance);
+                  return (
+                    <tr key={balance.id} className="hover:bg-gray-50/60">
+                      <td className="px-4 py-2">
+                        <input
+                          value={balance.party}
+                          list="bs-parties"
+                          onChange={(e) =>
+                            sheet &&
+                            persist(
+                              updateBalanceDue(sheet, balance.id, {
+                                party: e.target.value,
+                              }),
+                            )
+                          }
+                          className="w-full rounded-md border border-transparent bg-transparent px-2 py-1 font-medium text-gray-900 outline-none transition hover:border-gray-200 focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-100"
+                        />
+                      </td>
+                      <td className="px-2 py-2">
+                        <select
+                          value={balance.direction}
+                          onChange={(e) =>
+                            sheet &&
+                            persist(
+                              updateBalanceDue(sheet, balance.id, {
+                                direction:
+                                  e.target.value === "receivable"
+                                    ? "receivable"
+                                    : "payable",
+                              }),
+                            )
+                          }
+                          className="w-full rounded-md border border-transparent bg-transparent px-1 py-1 text-xs text-gray-700 outline-none transition hover:border-gray-200 focus:border-brand-500 focus:bg-white"
+                        >
+                          <option value="payable">We owe</option>
+                          <option value="receivable">Owed to us</option>
+                        </select>
+                      </td>
+                      <td className="px-2 py-2 text-right">
+                        <input
+                          value={balance.amount}
+                          type="number"
+                          min="0"
+                          onChange={(e) =>
+                            sheet &&
+                            persist(
+                              updateBalanceDue(sheet, balance.id, {
+                                amount: Number(e.target.value),
+                              }),
+                            )
+                          }
+                          className="w-28 rounded-md border border-transparent bg-transparent px-2 py-1 text-right tabular-nums text-gray-700 outline-none transition hover:border-gray-200 focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-100"
+                        />
+                      </td>
+                      <td className="px-2 py-2 text-right">
+                        <input
+                          value={balance.paid}
+                          type="number"
+                          min="0"
+                          onChange={(e) =>
+                            sheet &&
+                            persist(
+                              updateBalanceDue(sheet, balance.id, {
+                                paid: Number(e.target.value),
+                              }),
+                            )
+                          }
+                          className="w-28 rounded-md border border-transparent bg-transparent px-2 py-1 text-right tabular-nums text-gray-500 outline-none transition hover:border-gray-200 focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-100"
+                        />
+                      </td>
+                      <td className="px-2 py-2 text-right">
+                        <span
+                          className={cn(
+                            "tabular-nums font-semibold",
+                            left === 0
+                              ? "text-emerald-700"
+                              : overdue
+                                ? "text-red-700"
+                                : "text-gray-900",
+                          )}
+                        >
+                          {formatLKR(left)}
+                        </span>
+                        <span className="ml-2 text-[10px] uppercase tracking-wide text-gray-400">
+                          {left === 0 ? "settled" : status === "part-paid" ? "part" : ""}
+                        </span>
+                      </td>
+                      <td className="px-2 py-2">
+                        <div className="flex items-center gap-1">
+                          <input
+                            value={balance.dueAt}
+                            type="date"
+                            onChange={(e) =>
+                              sheet &&
+                              persist(
+                                updateBalanceDue(sheet, balance.id, {
+                                  dueAt: e.target.value,
+                                }),
+                              )
+                            }
+                            className="w-32 rounded-md border border-transparent bg-transparent px-1 py-1 text-xs text-gray-600 outline-none transition hover:border-gray-200 focus:border-brand-500 focus:bg-white"
+                          />
+                          {overdue && (
+                            <span title="Overdue" className="shrink-0">
+                              <CalendarClock className="h-3.5 w-3.5 text-red-600" />
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-2 py-2">
+                        <input
+                          value={balance.containerId}
+                          list="bs-containers"
+                          placeholder="-"
+                          onChange={(e) =>
+                            sheet &&
+                            persist(
+                              updateBalanceDue(sheet, balance.id, {
+                                containerId: e.target.value.toUpperCase(),
+                              }),
+                            )
+                          }
+                          className="w-32 rounded-md border border-transparent bg-transparent px-2 py-1 font-mono text-xs text-gray-700 outline-none transition hover:border-gray-200 focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-100"
+                        />
+                      </td>
+                      <td className="px-2 py-2 text-right">
+                        <button
+                          onClick={() =>
+                            sheet && persist(removeBalanceDue(sheet, balance.id))
+                          }
+                          title="Remove this balance"
+                          className="rounded-md p-1 text-gray-400 transition hover:bg-red-50 hover:text-red-600"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Who it is with */}
+        {parties.length > 0 && (
+          <div className="border-t border-gray-100 px-5 py-4">
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+              By party
+            </p>
+            <ul className="space-y-1 text-sm">
+              {parties.map((row) => (
+                <li
+                  key={row.party}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-2"
+                >
+                  <span className="font-medium text-gray-900">
+                    {row.party}
+                    {row.overdueCount > 0 && (
+                      <span className="ml-2 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700">
+                        {row.overdueCount} overdue
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-xs text-gray-600">
+                    {row.payableOutstanding > 0 && (
+                      <>we owe {formatLKR(row.payableOutstanding)}</>
+                    )}
+                    {row.payableOutstanding > 0 && row.receivableOutstanding > 0 && " · "}
+                    {row.receivableOutstanding > 0 && (
+                      <>owed to us {formatLKR(row.receivableOutstanding)}</>
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
+
       {/* ------------------------------ Partners ----------------------------- */}
       {partners.length > 0 && (
         <section className="mt-6 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
@@ -1026,6 +1507,11 @@ export default function BalancePage() {
       )}
 
       {/* Shared suggestion lists */}
+      <datalist id="bs-parties">
+        {knownParties.map((name) => (
+          <option key={name} value={name} />
+        ))}
+      </datalist>
       <datalist id="bs-partners">
         {knownPartners.map((p) => (
           <option key={p} value={p} />
@@ -1168,13 +1654,14 @@ function ImportPreview({
 }) {
   const fresh = pending.rows.filter((r) => !r.duplicate).length;
   const repeats = pending.rows.length - fresh;
+  const noun = pending.scope === "balances" ? "balance" : "expense";
 
   return (
     <div className="animate-fade-in border-b border-amber-200 bg-amber-50/60 px-5 py-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-sm font-semibold text-gray-900">
-            Read {pending.rows.length} expense
+            Read {pending.rows.length} {noun}
             {pending.rows.length === 1 ? "" : "s"} from {pending.fileName}
             {pending.sheetName ? ` (${pending.sheetName})` : ""}
           </p>
@@ -1217,33 +1704,82 @@ function ImportPreview({
           <thead className="sticky top-0 bg-gray-50 text-gray-500">
             <tr>
               <th className="px-3 py-2 font-medium">Row</th>
-              <th className="px-3 py-2 font-medium">Expense</th>
-              <th className="px-3 py-2 font-medium">Partner</th>
-              <th className="px-3 py-2 font-medium">Container</th>
-              <th className="px-3 py-2 text-right font-medium">Amount</th>
+              <th className="px-3 py-2 font-medium">
+                {pending.scope === "balances" ? "Party" : "Expense"}
+              </th>
+              {pending.scope === "balances" ? (
+                <>
+                  <th className="px-3 py-2 font-medium">Direction</th>
+                  <th className="px-3 py-2 text-right font-medium">Total</th>
+                  <th className="px-3 py-2 text-right font-medium">Paid</th>
+                  <th className="px-3 py-2 text-right font-medium">Outstanding</th>
+                  <th className="px-3 py-2 font-medium">Due</th>
+                </>
+              ) : (
+                <>
+                  <th className="px-3 py-2 font-medium">Partner</th>
+                  <th className="px-3 py-2 font-medium">Container</th>
+                  <th className="px-3 py-2 text-right font-medium">Amount</th>
+                </>
+              )}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {pending.rows.map((row, i) => (
-              <tr key={`${row.row}-${i}`} className={row.duplicate ? "bg-gray-50" : ""}>
-                <td className="px-3 py-1.5 text-gray-400">{row.row}</td>
-                <td className="px-3 py-1.5 text-gray-900">
-                  {row.name}
-                  {row.duplicate && (
-                    <span className="ml-2 rounded bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
-                      already here
-                    </span>
-                  )}
-                </td>
-                <td className="px-3 py-1.5 text-gray-700">{row.partner}</td>
-                <td className="px-3 py-1.5 text-gray-500">
-                  {row.containerId || "general"}
-                </td>
-                <td className="px-3 py-1.5 text-right tabular-nums text-gray-900">
-                  {formatLKR(row.amount)}
-                </td>
-              </tr>
-            ))}
+            {pending.scope === "balances"
+              ? pending.rows.map((row, i) => (
+                  <tr
+                    key={`${row.row}-${i}`}
+                    className={row.duplicate ? "bg-gray-50" : ""}
+                  >
+                    <td className="px-3 py-1.5 text-gray-400">{row.row}</td>
+                    <td className="px-3 py-1.5 text-gray-900">
+                      {row.party}
+                      {row.duplicate && (
+                        <span className="ml-2 rounded bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
+                          already here
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-1.5 text-gray-700">
+                      {row.direction === "receivable" ? "Owed to us" : "We owe"}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums text-gray-700">
+                      {formatLKR(row.amount)}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums text-gray-500">
+                      {row.paid > 0 ? formatLKR(row.paid) : "-"}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums font-medium text-gray-900">
+                      {formatLKR(row.amount - row.paid)}
+                    </td>
+                    <td className="px-3 py-1.5 text-gray-500">
+                      {row.dueAt || "-"}
+                    </td>
+                  </tr>
+                ))
+              : pending.rows.map((row, i) => (
+                  <tr
+                    key={`${row.row}-${i}`}
+                    className={row.duplicate ? "bg-gray-50" : ""}
+                  >
+                    <td className="px-3 py-1.5 text-gray-400">{row.row}</td>
+                    <td className="px-3 py-1.5 text-gray-900">
+                      {row.name}
+                      {row.duplicate && (
+                        <span className="ml-2 rounded bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
+                          already here
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-1.5 text-gray-700">{row.partner}</td>
+                    <td className="px-3 py-1.5 text-gray-500">
+                      {row.containerId || "general"}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums text-gray-900">
+                      {formatLKR(row.amount)}
+                    </td>
+                  </tr>
+                ))}
           </tbody>
         </table>
       </div>

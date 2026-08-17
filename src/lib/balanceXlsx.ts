@@ -1,5 +1,7 @@
 import ExcelJS from "exceljs";
 import {
+  balanceDueTotals,
+  balanceOutstanding,
   balanceTotals,
   byContainer,
   byPartner,
@@ -22,6 +24,7 @@ import {
   UNASSIGNED_PARTNER,
   type Formula,
 } from "./xlsxKit";
+import { OWE_LABEL, OWED_LABEL } from "./labels";
 
 /**
  * The spreadsheet version of the balance sheet: five tabs, and every figure on
@@ -50,6 +53,7 @@ const S_CONTAINER = "Profit by Container";
 const S_EXPENSES = "Expenses";
 const S_TURNOVER = "Turnover";
 const S_PARTNER = "By Partner";
+const S_BALANCES = "Balances";
 
 /** The label on the general overhead row of the Profit by Container tab. */
 export const GENERAL_ROW_LABEL = "(general, not per container)";
@@ -451,6 +455,163 @@ export async function buildBalanceXlsx(sheet: BalanceSheet): Promise<Buffer> {
     "Every expense belongs to a partner, so these rows account for all spending, general overhead included. The share is of total expenses, not of turnover.",
   );
   pa.pageSetup.printTitlesRow = "1:2";
+
+  /* =============================== Balances =============================== */
+
+  // Always written, even with nothing on it, so the tab doubles as the form to
+  // fill in when carrying balances forward: export, type them here, upload.
+  const bal = workbook.addWorksheet(S_BALANCES, {
+    views: [{ state: "frozen", ySplit: 2 }],
+  });
+  bal.columns = [
+    { width: 26 },
+    { width: 14 },
+    { width: 16 },
+    { width: 16 },
+    { width: 16 },
+    { width: 12 },
+    { width: 20 },
+    { width: 22 },
+  ];
+  titleRow(bal, "A1:H1", "Balances to be paid");
+  headerRow(
+    bal,
+    2,
+    ["Party", "Direction", "Total", "Paid", "Outstanding", "Due", "Container", "Order number"],
+    2,
+  );
+
+  const dues = balanceDueTotals(sheet);
+  const balCount = sheet.balances.length;
+  const balLast = lastDataRow(balCount);
+  const balTotalRow = totalRow(balCount);
+  const dueOrder = [...sheet.balances].sort((a, b) =>
+    (a.dueAt || "9999").localeCompare(b.dueAt || "9999"),
+  );
+
+  dueOrder.forEach((balance, i) => {
+    const r = DATA_START_ROW + i;
+    const row = bal.getRow(r);
+    row.getCell(1).value = balance.party;
+    row.getCell(2).value =
+      balance.direction === "receivable" ? OWED_LABEL : OWE_LABEL;
+
+    const total = row.getCell(3);
+    total.value = balance.amount;
+    const paid = row.getCell(4);
+    paid.value = balance.paid;
+    // The point of the tab: change the total or the paid figure and what is left
+    // follows, instead of a stale number sitting there being believed.
+    const left = row.getCell(5);
+    left.value = formula(`C${r}-D${r}`, balanceOutstanding(balance));
+
+    for (const cell of [total, paid, left]) {
+      cell.numFmt = MONEY_FMT;
+      cell.alignment = { horizontal: "right" };
+    }
+    const due = row.getCell(6);
+    if (balance.dueAt !== "") {
+      due.value = new Date(`${balance.dueAt}T00:00:00.000Z`);
+      due.numFmt = DATE_FMT;
+    }
+    row.getCell(7).value = balance.containerId;
+    row.getCell(8).value = balance.orderNumber;
+  });
+
+  const balTotals = bal.getRow(balTotalRow);
+  balTotals.getCell(1).value = "Total";
+  const cells: Array<[number, number]> = [
+    [3, dues.payable + dues.receivable],
+    [4, dues.paid],
+    [5, dues.payableOutstanding + dues.receivableOutstanding],
+  ];
+  for (const entry of cells) {
+    const col = String.fromCharCode(64 + entry[0]);
+    const cell = balTotals.getCell(entry[0]);
+    cell.value = formula(
+      `SUM(${col}${DATA_START_ROW}:${col}${balLast})`,
+      entry[1],
+    );
+    cell.numFmt = MONEY_FMT;
+    cell.alignment = { horizontal: "right" };
+  }
+  emphasise(balTotals, 8);
+
+  // Split by direction, so the two are never added together by mistake.
+  const directionCol = `$B$${DATA_START_ROW}:$B$${balLast}`;
+  const leftCol = `$E$${DATA_START_ROW}:$E$${balLast}`;
+  const posHeader = balTotalRow + 2;
+  headerRow(bal, posHeader, ["Position", "Amount"]);
+  const position: Array<[string, string, number]> = [
+    [
+      "Still to pay",
+      `SUMIF(${directionCol},"${OWE_LABEL}",${leftCol})`,
+      dues.payableOutstanding,
+    ],
+    [
+      "Still to receive",
+      `SUMIF(${directionCol},"${OWED_LABEL}",${leftCol})`,
+      dues.receivableOutstanding,
+    ],
+    [
+      "Net position",
+      `B${posHeader + 2}-B${posHeader + 1}`,
+      dues.net,
+    ],
+  ];
+  position.forEach((entry, i) => {
+    const row = bal.getRow(posHeader + 1 + i);
+    row.getCell(1).value = entry[0];
+    const cell = row.getCell(2);
+    cell.value = formula(entry[1], entry[2]);
+    cell.numFmt = MONEY_FMT;
+    cell.alignment = { horizontal: "right" };
+  });
+  emphasise(bal.getRow(posHeader + 3), 2);
+
+  noteAt(
+    bal,
+    posHeader + 5,
+    `A${posHeader + 5}:H${posHeader + 5}`,
+    `Outstanding is a formula, so change the Total or the Paid figure and it follows. Direction must read "${OWE_LABEL}" or "${OWED_LABEL}". Add rows above the Total and this tab can be uploaded back into the Balance Sheet page to bring balances in. These figures are a position, not profit: an outstanding balance is not counted as an expense, since the expense may already be recorded on the Expenses tab.`,
+  );
+
+  if (balCount > 0) {
+    bal.autoFilter = {
+      from: { row: 2, column: 1 },
+      to: { row: balLast, column: 8 },
+    };
+  }
+  bal.pageSetup.printTitlesRow = "1:2";
+
+  /* -------- the outstanding position, on the summary tab as well -------- */
+
+  // Added below the existing notes so no row already on that tab moves.
+  headerRow(sum, 22, ["Outstanding", "Amount"]);
+  const summaryDues: Array<[string, string, number]> = [
+    ["Still to pay", `'${S_BALANCES}'!B${posHeader + 1}`, dues.payableOutstanding],
+    ["Still to receive", `'${S_BALANCES}'!B${posHeader + 2}`, dues.receivableOutstanding],
+    ["Net position", "B24-B23", dues.net],
+    [
+      "Overdue",
+      `SUMIF('${S_BALANCES}'!$F$${DATA_START_ROW}:$F$${balLast},"<"&TODAY(),'${S_BALANCES}'!$E$${DATA_START_ROW}:$E$${balLast})`,
+      dues.overdueAmount,
+    ],
+  ];
+  summaryDues.forEach((entry, i) => {
+    const row = sum.getRow(23 + i);
+    row.getCell(1).value = entry[0];
+    const cell = row.getCell(2);
+    cell.value = formula(entry[1], entry[2]);
+    cell.numFmt = MONEY_FMT;
+    cell.alignment = { horizontal: "right" };
+  });
+  noteAt(
+    sum,
+    28,
+    "A28:B28",
+    "Outstanding balances are a position, not profit. They are deliberately absent from the figures above: an expense already recorded on the Expenses tab would otherwise be counted twice.",
+  );
 
   const out = await workbook.xlsx.writeBuffer();
   return Buffer.from(out);
