@@ -21,6 +21,7 @@ import {
   Upload,
   Wallet,
   CalendarClock,
+  Download,
 } from "lucide-react";
 import {
   addBalanceDue,
@@ -46,6 +47,7 @@ import {
   containerIds,
   createExpense,
   createTurnover,
+  balancesFilename,
   emptyBalanceSheet,
   expensesFilename,
   loadBalanceSheet,
@@ -92,7 +94,9 @@ export default function BalancePage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   /** Which export is being built, so only that button shows a spinner. */
-  const [building, setBuilding] = useState<"full" | "expenses" | null>(null);
+  const [building, setBuilding] = useState<
+    "full" | "expenses" | "balances" | null
+  >(null);
   const jsonRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const balanceImportRef = useRef<HTMLInputElement>(null);
@@ -472,17 +476,23 @@ export default function BalancePage() {
    * ship to the browser for a button that is pressed now and then.
    */
   const exportExcel = useCallback(
-    async (scope: "full" | "expenses") => {
+    async (scope: "full" | "expenses" | "balances") => {
       if (!sheet) return;
       const nothingToSend =
         scope === "expenses"
           ? sheet.expenses.length === 0
-          : sheet.expenses.length === 0 && sheet.turnover.length === 0;
+          : scope === "balances"
+            ? sheet.balances.length === 0
+            : sheet.expenses.length === 0 &&
+              sheet.turnover.length === 0 &&
+              sheet.balances.length === 0;
       if (nothingToSend) {
         setError(
           scope === "expenses"
             ? "There are no expenses to export yet."
-            : "There is nothing to export yet.",
+            : scope === "balances"
+              ? "There are no balances to export yet."
+              : "There is nothing to export yet.",
         );
         return;
       }
@@ -505,12 +515,16 @@ export default function BalancePage() {
           await res.blob(),
           scope === "expenses"
             ? expensesFilename("xlsx")
-            : balanceFilename("xlsx"),
+            : scope === "balances"
+              ? balancesFilename("xlsx")
+              : balanceFilename("xlsx"),
         );
         setNotice(
           scope === "expenses"
-            ? "Expenses exported on their own - name, partner and amount, with no turnover or profit in the file."
-            : "Excel exported - 5 tabs, and every total is a live formula, so editing an amount updates the rest.",
+            ? "Expenses exported on their own - name, partner, container and amount, with no turnover or profit in the file."
+            : scope === "balances"
+              ? "Balances exported on their own - what is left, the status and the position are all live formulas, and the file can be edited and uploaded back."
+              : "Excel exported - 6 tabs, and every total is a live formula, so editing an amount updates the rest.",
         );
       } catch (err) {
         setNotice(null);
@@ -532,6 +546,8 @@ export default function BalancePage() {
     sheet !== null && sheet.expenses.length === 0 && sheet.turnover.length === 0;
   /** The expenses-only export needs expenses, but not any turnover. */
   const noExpenses = sheet === null || sheet.expenses.length === 0;
+  /** Likewise the balances-only export. */
+  const noBalances = sheet === null || sheet.balances.length === 0;
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-8 sm:py-12">
@@ -1130,7 +1146,7 @@ export default function BalancePage() {
 
       {/* --------------------------- Balances to pay -------------------------- */}
       <section className="mt-6 rounded-2xl border border-gray-200 bg-white shadow-sm">
-        <div className="relative border-b border-gray-100 px-5 py-4 pr-44">
+        <div className="relative border-b border-gray-100 px-5 py-4 pr-[17rem]">
           <h2 className="flex items-center gap-2 font-semibold text-gray-900">
             <Wallet className="h-4 w-4 text-brand-600" />
             Balances to be paid
@@ -1139,6 +1155,19 @@ export default function BalancePage() {
             What is still outstanding, either way round. Record the total and how
             much has been paid; what is left is worked out for you.
           </p>
+          <button
+            onClick={() => exportExcel("balances")}
+            disabled={noBalances || building !== null}
+            title="Download these balances as a spreadsheet"
+            className="absolute right-[9.5rem] top-4 inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-40"
+          >
+            {building === "balances" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Download className="h-3.5 w-3.5" />
+            )}
+            {building === "balances" ? "Building..." : "Download"}
+          </button>
           <button
             onClick={() => balanceImportRef.current?.click()}
             disabled={importing !== null}
@@ -1549,6 +1578,19 @@ export default function BalancePage() {
           Export CSV
         </button>
         <button
+          onClick={() => exportExcel("balances")}
+          disabled={noBalances || building !== null}
+          title="One tab of what is still outstanding, with live formulas"
+          className="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-white px-4 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-50 disabled:opacity-40"
+        >
+          {building === "balances" ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Wallet className="h-4 w-4" />
+          )}
+          {building === "balances" ? "Building..." : "Balances only"}
+        </button>
+        <button
           onClick={() => exportExcel("expenses")}
           disabled={noExpenses || building !== null}
           title="One tab of expense name, partner and amount - no turnover or profit in the file"
@@ -1576,13 +1618,17 @@ export default function BalancePage() {
         </button>
       </div>
       <p className="mt-2 text-right text-xs text-gray-400">
+        <span className="font-medium text-gray-500">Balances only</span> gives one
+        tab of what is still outstanding, with the status and the position worked
+        out live.{" "}
         <span className="font-medium text-gray-500">Expenses only</span> gives one
-        tab of expense name, partner and amount - no turnover, profit or margin in
-        the file, so it can be shared as it is.{" "}
+        tab of expense name, partner, container and amount - no turnover or profit
+        in the file.{" "}
         <span className="font-medium text-gray-500">Export Excel</span> gives the
-        whole sheet across 5 tabs. In both, amounts are the only typed numbers and
-        every total is a live formula over them, so editing an amount in Excel
-        updates the rest.
+        whole sheet across 6 tabs. In all three, the typed figures are the only
+        numbers; every total is a live formula over them, so editing one in Excel
+        updates the rest - and both single-tab files can be edited and uploaded
+        back.
       </p>
 
       <footer className="mt-16 text-center text-xs text-gray-400">

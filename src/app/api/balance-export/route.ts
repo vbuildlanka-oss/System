@@ -1,18 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   balanceFilename,
+  balancesFilename,
   expensesFilename,
   parseBalanceSheet,
   MAX_ENTRIES,
 } from "@/lib/balanceSheet";
 import { buildBalanceXlsx } from "@/lib/balanceXlsx";
 import { buildExpensesXlsx } from "@/lib/expensesXlsx";
+import { buildBalancesXlsx } from "@/lib/balancesXlsx";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 interface ExportBody {
-  /** "full" for the whole sheet, "expenses" for the expenses on their own. */
+  /**
+   * "full" for the whole sheet, "expenses" for the expenses on their own,
+   * "balances" for the outstanding balances on their own.
+   */
   scope?: unknown;
   sheet?: unknown;
 }
@@ -42,6 +47,7 @@ export async function POST(req: NextRequest) {
     const body: ExportBody =
       raw !== null && typeof raw === "object" ? (raw as ExportBody) : {};
     const expensesOnly = body.scope === "expenses";
+    const balancesOnly = body.scope === "balances";
     // The sheet used to be posted as the whole body, so both shapes are read.
     const sheet = parseBalanceSheet(body.sheet ?? raw);
 
@@ -52,7 +58,18 @@ export async function POST(req: NextRequest) {
           { status: 400 },
         );
       }
-    } else if (sheet.expenses.length === 0 && sheet.turnover.length === 0) {
+    } else if (balancesOnly) {
+      if (sheet.balances.length === 0) {
+        return NextResponse.json(
+          { error: "There are no balances to export yet." },
+          { status: 400 },
+        );
+      }
+    } else if (
+      sheet.expenses.length === 0 &&
+      sheet.turnover.length === 0 &&
+      sheet.balances.length === 0
+    ) {
       return NextResponse.json(
         { error: "There is nothing to export yet." },
         { status: 400 },
@@ -70,10 +87,14 @@ export async function POST(req: NextRequest) {
 
     const xlsx = expensesOnly
       ? await buildExpensesXlsx(sheet)
-      : await buildBalanceXlsx(sheet);
+      : balancesOnly
+        ? await buildBalancesXlsx(sheet)
+        : await buildBalanceXlsx(sheet);
     const filename = expensesOnly
       ? expensesFilename("xlsx")
-      : balanceFilename("xlsx");
+      : balancesOnly
+        ? balancesFilename("xlsx")
+        : balanceFilename("xlsx");
 
     return new NextResponse(new Uint8Array(xlsx), {
       status: 200,

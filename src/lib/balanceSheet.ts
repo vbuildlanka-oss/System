@@ -867,6 +867,11 @@ export function expensesFilename(ext: string, on: Date = new Date()): string {
   return datedFilename("Expenses", ext, on);
 }
 
+/** The outstanding balances on their own. */
+export function balancesFilename(ext: string, on: Date = new Date()): string {
+  return datedFilename("Balances to be paid", ext, on);
+}
+
 /**
  * One CSV holding both halves of the sheet, then the summary, so it opens as a
  * readable statement rather than needing two files stitched together.

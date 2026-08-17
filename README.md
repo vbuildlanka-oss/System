@@ -264,6 +264,13 @@ belongs to.
     something only a balances sheet has, and if it does not, the reply says so.
   - Everything skipped is listed with its reason — a credit in brackets, a paid
     figure larger than the total, a row already settled.
+  - **Download them on their own** with **Balances only**, or the button on the
+    section itself: one tab, `Balances to be paid <date> <time>.xlsx`. What we owe
+    comes first, soonest due at the top. `Outstanding`, `Status` and the position
+    are formulas — edit a `Paid` figure and the row flips to *settled*, the totals
+    move and the per-party rows follow. Overdue is judged against the day the file
+    is opened, not the day it was made. It carries no turnover, expense or profit
+    figure, and it can be edited and uploaded straight back.
 
 - **Excel export** — a six-tab workbook, and every figure on it is a live
   formula:

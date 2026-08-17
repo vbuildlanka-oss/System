@@ -33,6 +33,7 @@ import {
   partyNames,
   removeBalanceDue,
   settleBalanceDue,
+  balancesFilename,
   todayIso,
   updateBalanceDue,
   MAX_ENTRIES,
@@ -40,6 +41,8 @@ import {
   type BalanceSheet,
 } from "../src/lib/balanceSheet";
 import { buildBalanceXlsx } from "../src/lib/balanceXlsx";
+import { buildBalancesXlsx } from "../src/lib/balancesXlsx";
+import { POST as balanceExportPost } from "../src/app/api/balance-export/route";
 import { xlsxToGrids } from "../src/lib/parseTabular";
 import {
   addImportedBalances,
@@ -838,9 +841,185 @@ async function fileChecks() {
   );
   check(noFile.status === 400, `a request with no file is refused (${noFile.status})`);
 
+  /* ------------------------- the balances-only file ------------------------- */
+
+  section("Balances on their own: a chase-list");
+  const onlyBuf = await buildBalancesXlsx(sheet);
+  const onlyBook = new ExcelJS.Workbook();
+  await onlyBook.xlsx.load(onlyBuf as unknown as ArrayBuffer);
+
+  check(onlyBook.worksheets.length === 1, `one tab, not six (${onlyBook.worksheets.length})`);
+  const ows = onlyBook.getWorksheet("Balances")!;
+  check(ows !== undefined, "and it is called Balances");
+  check(
+    [1, 2, 3, 4, 5, 6, 7].map((c) => String(ows.getRow(2).getCell(c).value)).join(", ") ===
+      "Party, Direction, Total, Paid, Outstanding, Due, Status",
+    `with a Status column of its own (${[5, 6, 7].map((c) => String(ows.getRow(2).getCell(c).value)).join(", ")})`,
+  );
+
+  // Money we owe first, soonest due at the top, undated last.
+  const chase = [3, 4, 5].map(
+    (n) => `${String(ows.getCell(`A${n}`).value)}/${String(ows.getCell(`B${n}`).value)}`,
+  );
+  check(
+    chase.join(" > ") === `Anton/${OWE_LABEL} > Bala/${OWE_LABEL} > Ahmad Trading/${OWED_LABEL}`,
+    `what we owe first, then what is owed to us (${chase.join(" > ")})`,
+  );
+
+  section("Balances on their own: every derived figure is a formula");
+  check(f2(ows, "E3") === "C3-D3", `outstanding is derived (${f2(ows, "E3")})`);
+  check(r(ows, "E3") === 100_000, "with the right cached answer");
+  check(
+    f2(ows, "G3").startsWith('IF(E3=0,"settled"'),
+    `status is derived, so it cannot go stale (${f2(ows, "G3")})`,
+  );
+  check(
+    f2(ows, "G3").includes("TODAY()"),
+    "and overdue is worked out against the day the file is opened",
+  );
+  check(r(ows, "G3") === "overdue", `an overdue row says so (${String(r(ows, "G3"))})`);
+  // Row 4 is Bala: we owe her, nothing paid, no due date.
+  check(r(ows, "G4") === "unpaid", `an untouched one says unpaid (${String(r(ows, "G4"))})`);
+  check(r(ows, "G5") === "part-paid", `a part-paid one says so (${String(r(ows, "G5"))})`);
+  check(f2(ows, "E6") === "SUM(E3:E5)", `the total sums the entry rows (${f2(ows, "E6")})`);
+  check(r(ows, "E6") === 340_000, "and is cached correctly");
+
+  // Position block: header row 8, rows 9-11. Party block: header 13.
+  check(String(ows.getCell("A9").value) === "Still to pay", "the position is worked out");
+  check(r(ows, "B9") === dues.payableOutstanding, `still to pay (${String(r(ows, "B9"))})`);
+  check(r(ows, "B11") === dues.net, `net position (${String(r(ows, "B11"))})`);
+  check(String(ows.getCell("A13").value) === "Party", "and there is a per-party block");
+  check(
+    f2(ows, "B14").startsWith("SUMIFS("),
+    `split by party and direction, so a party who is both owed and owing reads honestly (${f2(ows, "B14")})`,
+  );
+
+  section("Balances on their own: no trading figures leak in");
+  // The file is a position. Turnover, expenses and profit have no business here.
+  let trading = sample();
+  trading = addTurnover(trading, createTurnover({ containerId: A, turnover: 1_234_567 }));
+  trading = addExpense(
+    trading,
+    createExpense({ name: "Freight", partner: "Anton", amount: 987_654, containerId: A }),
+  );
+  const tradingBook = new ExcelJS.Workbook();
+  await tradingBook.xlsx.load(
+    (await buildBalancesXlsx(trading)) as unknown as ArrayBuffer,
+  );
+  const tws = tradingBook.getWorksheet("Balances")!;
+  const numbers: number[] = [];
+  const texts: string[] = [];
+  tws.eachRow({ includeEmpty: true }, (row) => {
+    row.eachCell({ includeEmpty: true }, (cell) => {
+      const v = cell.value as unknown;
+      if (typeof v === "number") numbers.push(v);
+      else if (typeof v === "string") texts.push(v);
+      else if (v && typeof v === "object") {
+        const obj = v as { result?: unknown };
+        if (typeof obj.result === "number") numbers.push(obj.result);
+      }
+    });
+  });
+  check(tradingBook.worksheets.length === 1, "still one tab with trading on the sheet");
+  check(!numbers.includes(1_234_567), "no turnover figure appears");
+  check(!numbers.includes(987_654), "no expense figure appears");
+  // Checked on the headings and row labels rather than every string on the sheet:
+  // the note at the bottom explains that no profit appears here, so it naturally
+  // contains the very words being searched for.
+  const labels: string[] = [];
+  tws.getRow(2).eachCell({ includeEmpty: true }, (cell) => {
+    if (typeof cell.value === "string") labels.push(cell.value);
+  });
+  tws.eachRow({ includeEmpty: true }, (row, n) => {
+    const first = row.getCell(1).value;
+    // The note is merged across the row; everything above it is a real label.
+    if (typeof first === "string" && first.length < 40 && n > 1) labels.push(first);
+  });
+  check(
+    labels.length > 5 && !labels.some((t) => /turnover|profit|margin/i.test(t)),
+    `no column or row is labelled turnover, profit or margin (${labels.length} labels checked)`,
+  );
+  check(
+    labels.includes("Outstanding") && labels.includes("Still to pay"),
+    "while the labels that should be there are",
+  );
+
+  section("Balances on their own: it can be uploaded back");
+  const reread = pickBalanceSheet(await xlsxToGrids(onlyBuf));
+  check(reread.problem === undefined, `the file reads back (${reread.problem ?? "no problem"})`);
+  check(reread.rows.length === 3, `all three balances return (${reread.rows.length})`);
+  check(
+    !reread.rows.some((row) => /total|still to|net position/i.test(row.party)),
+    "with none of the summary rows read as balances",
+  );
+  const backAnton = reread.rows.find((row) => row.party === "Anton")!;
+  check(
+    backAnton.amount === 150_000 && backAnton.paid === 50_000 && backAnton.dueAt === PAST,
+    "and their figures intact",
+  );
+  check(
+    markBalanceDuplicates(reread.rows, sheet.balances).every((row) => row.duplicate),
+    "so a re-upload adds nothing by accident",
+  );
+
+  section("Balances on their own: an empty ledger");
+  const emptyOnly = await buildBalancesXlsx(emptyBalanceSheet());
+  const emptyBook = new ExcelJS.Workbook();
+  await emptyBook.xlsx.load(emptyOnly as unknown as ArrayBuffer);
+  const ews = emptyBook.getWorksheet("Balances")!;
+  check(ews !== undefined, "still exports, as a form to fill in");
+  const emptyTotal = f2(ews, "E4");
+  const range = /SUM\(E(\d+):E(\d+)\)/.exec(emptyTotal);
+  check(
+    range !== null && Number(range[2]) < 4,
+    `with its total outside its own SUM (${emptyTotal})`,
+  );
+
+  section("Balances on their own: the route and the file name");
+  const exportRes = await balanceExportPost(
+    new Request("http://localhost/api/balance-export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "balances", sheet }),
+    }) as unknown as NextRequest,
+  );
+  check(exportRes.status === 200, `the route serves it (${exportRes.status})`);
+  const disposition = exportRes.headers.get("Content-Disposition") ?? "";
+  check(
+    disposition.includes("Balances to be paid"),
+    `named for what it is (${disposition})`,
+  );
+  check(
+    !disposition.includes("Expenses") && !disposition.includes("Balance Sheet "),
+    "and cannot be mistaken for either of the other two exports",
+  );
+  const servedBook = new ExcelJS.Workbook();
+  await servedBook.xlsx.load(await exportRes.arrayBuffer());
+  check(servedBook.worksheets.length === 1, "with one tab");
+
+  const emptyExport = await balanceExportPost(
+    new Request("http://localhost/api/balance-export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "balances", sheet: emptyBalanceSheet() }),
+    }) as unknown as NextRequest,
+  );
+  check(emptyExport.status === 400, `an empty ledger is refused (${emptyExport.status})`);
+  check(
+    (((await emptyExport.json()) as { error?: string }).error ?? "").includes("balances"),
+    "saying it is the balances that are missing",
+  );
+
+  const name = balancesFilename("xlsx", new Date("2026-08-09T10:00:00Z"));
+  check(
+    name === "Balances to be paid 2026-08-09 1000.xlsx",
+    `dated and timed (${name})`,
+  );
+
   mkdirSync(".verify", { recursive: true });
   writeFileSync(".verify/balances.csv", balanceToCsv(sample()));
   writeFileSync(".verify/balances.xlsx", buffer);
+  writeFileSync(".verify/balances-only.xlsx", onlyBuf);
 
   if (failures > 0) {
     console.error(`\n${failures} CHECK(S) FAILED`);
