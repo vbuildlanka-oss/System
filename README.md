@@ -337,7 +337,40 @@ belongs to.
 
 ---
 
-## 7. Saved Data (`/data`)
+## 7. Calculation (`/calculation`) &mdash; private
+
+Working out the markup item by item. The markup **is** the profit, and a fast
+moving item does not carry the same markup as something that sits in the
+warehouse.
+
+- **Upload the requested bags** &mdash; a PDF, CSV or XLSX. A request list printed
+  by this app works too: its layout puts three counts between the item name and
+  the money, which is read properly rather than leaving them stuck to the name.
+- **One markup across every bag**, then **change it per item** where it needs to
+  be. An item you set by hand is remembered as such, so changing the figure
+  applied across the board leaves it alone &mdash; a change of mind about the base
+  never undoes an afternoon of per-item work.
+- **Mark the fast movers** and reprice them as a group in one go. The summary
+  splits bags and profit between fast and steady, since that is what a markup
+  follows.
+- **See what it makes**: what the bags cost, the profit on the markup, what it
+  sells for, and the markup per bag on average.
+- **Download a spreadsheet** where bags, cost and markup are the only typed
+  figures. Selling prices, line totals, profit and the fast/steady split are
+  formulas, so you can try a markup in Excel and watch the order re-price.
+
+> **This page is private, and nothing else can see it.** It is the only place a
+> cost or a markup appears. No other page or route reads the calculation, and the
+> buyer's price list, bag manifests, requests and the balance sheet carry no
+> markup, cost or profit-from-markup figure &mdash; the buyer sees one price per
+> bag, the selling price, and nothing behind it. All of that is enforced by the
+> suite, which reads the generated buyer PDF back as text and fails if a cost, a
+> markup or even the word appears. The download is named
+> `... Markup Calculation INTERNAL.xlsx`, so a wrong attachment is caught by eye.
+
+---
+
+## 8. Saved Data (`/data`)
 
 Everything this app remembers lives in your browser. **Saved data** in the top
 bar, reachable from every page, shows what is stored and lets you choose what to
@@ -416,6 +449,7 @@ npx tsx scripts/verify-balance.ts       # balance sheet: profit scopes, workbook
 npx tsx scripts/verify-appdata.ts       # saved data: listing, backup, clearing
 npx tsx scripts/verify-shipment.ts      # order number + container: names, files, privacy
 npx tsx scripts/verify-dues.ts          # balances to be paid: position, workbook, import
+npx tsx scripts/verify-calculation.ts   # markup per item, and that it never leaves the page
 ```
 
 ---

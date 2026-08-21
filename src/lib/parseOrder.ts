@@ -207,6 +207,53 @@ function parseQuantityList(lines: string[]): QtyListResult {
 }
 
 /**
+ * A request list printed by this app, rather than a supplier order sheet.
+ *
+ * It matters because the two layouts differ in a way that corrupts item names.
+ * A supplier row is "<name><qty>Rs<per bag>Rs<total>", but a request row carries
+ * three counts before the money - "<name><wanted><supplied><to go>" - so reading
+ * it as a supplier row leaves the first two glued to the name: "Anorak210".
+ */
+const REQUEST_LAYOUT_RE = /wanted\s*supplied\s*to\s*go/i;
+
+/**
+ * Split "<name><wanted><supplied><to go>" from a request list.
+ *
+ * The three counts are not independent: what is wanted is the quantity derived
+ * from the money, and "to go" is what is wanted less what was supplied. So the
+ * whole trailing run is `${wanted}${supplied}${wanted - supplied}`, and the only
+ * unknown is how much was supplied - which can simply be tried.
+ *
+ * The longest match wins, since it accounts for more of the run. Where two are
+ * the same length, a name not ending in a digit is preferred: most item names do
+ * not, so that reading is the likelier one.
+ */
+function splitRequestRow(
+  prefix: string,
+  wanted: number,
+): { name: string; qty: number } | null {
+  const compact = prefix.replace(/\s+$/, "");
+  let best: { name: string; qty: number; length: number } | null = null;
+
+  for (let supplied = 0; supplied <= wanted; supplied += 1) {
+    const suffix = `${wanted}${supplied}${wanted - supplied}`;
+    if (!compact.endsWith(suffix)) continue;
+    const name = compact.slice(0, compact.length - suffix.length).trim();
+    if (name === "") continue;
+
+    const better =
+      best === null ||
+      suffix.length > best.length ||
+      (suffix.length === best.length &&
+        /\d$/.test(best.name) &&
+        !/\d$/.test(name));
+    if (better) best = { name, qty: wanted, length: suffix.length };
+  }
+
+  return best === null ? null : { name: best.name, qty: best.qty };
+}
+
+/**
  * Split a "<name><qty>" prefix into its name and quantity, using the line
  * total and per-bag price to determine the true quantity.
  */
@@ -214,6 +261,7 @@ function splitNameAndQty(
   prefix: string,
   perBag: number,
   total: number,
+  requestLayout = false,
 ): { name: string; qty: number } | null {
   const trimmed = prefix.trim();
 
@@ -221,6 +269,11 @@ function splitNameAndQty(
   if (perBag > 0) {
     const derived = Math.round(total / perBag);
     if (derived > 0 && Math.abs(derived * perBag - total) < 1) {
+      // A request list puts two more counts between the name and the money.
+      if (requestLayout) {
+        const asRequest = splitRequestRow(trimmed, derived);
+        if (asRequest) return asRequest;
+      }
       const qtyStr = String(derived);
       const compact = trimmed.replace(/\s+$/, "");
       if (compact.endsWith(qtyStr)) {
@@ -249,6 +302,9 @@ export async function parseOrderPdf(buffer: Buffer): Promise<ParsedOrder> {
   let title = "";
   let printedTotal: number | null = null;
   let printedQty: number | null = null;
+  // Decided once from the whole document, since a single row cannot tell you
+  // which layout it is in.
+  const requestLayout = REQUEST_LAYOUT_RE.test(text);
 
   for (const line of rawLines) {
     // Grand-total footer
@@ -268,7 +324,7 @@ export async function parseOrderPdf(buffer: Buffer): Promise<ParsedOrder> {
       const prefix = rowMatch[1];
       const perBag = parseMoney(rowMatch[2]);
       const total = parseMoney(rowMatch[3]);
-      const split = splitNameAndQty(prefix, perBag, total);
+      const split = splitNameAndQty(prefix, perBag, total, requestLayout);
       if (
         split &&
         Number.isFinite(split.qty) &&

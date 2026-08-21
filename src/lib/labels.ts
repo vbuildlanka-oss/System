@@ -28,3 +28,15 @@ export const UNASSIGNED_PARTNER = "Unassigned";
  */
 export const OWE_LABEL = "We owe";
 export const OWED_LABEL = "Owed to us";
+
+/**
+ * How fast an item moves, in the markup calculation.
+ *
+ * Real values rather than a tick, so the fast/steady split in that sheet can be a
+ * SUMIF that follows an item being reclassified.
+ *
+ * These two belong to the internal calculation only. Nothing a buyer or an
+ * investor sees carries them, because they sit beside a markup.
+ */
+export const FAST_LABEL = "Fast";
+export const STEADY_LABEL = "Steady";

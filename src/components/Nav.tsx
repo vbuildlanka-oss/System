@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Boxes,
+  Calculator,
   ClipboardList,
   Database,
   FileSpreadsheet,
@@ -20,6 +21,7 @@ const links = [
   { href: "/stockpile", label: "Stockpile", icon: Boxes },
   { href: "/requests", label: "Requests", icon: ListChecks },
   { href: "/balance", label: "Balance Sheet", icon: Scale },
+  { href: "/calculation", label: "Calculation", icon: Calculator },
 ];
 
 export default function Nav() {

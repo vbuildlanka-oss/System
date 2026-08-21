@@ -114,6 +114,15 @@ export const DATA_SECTIONS: DataSection[] = [
     timestampField: "updatedAt",
   },
   {
+    id: "calculation",
+    label: "Calculation",
+    page: "/calculation",
+    key: "balebook.calculation.v1",
+    legacyKeys: [],
+    describe: (p) => plural(countOf(p, "rows"), "item priced", "items priced"),
+    timestampField: "updatedAt",
+  },
+  {
     id: "buyers",
     label: "Saved buyers",
     page: "used on every document",
