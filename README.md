@@ -370,7 +370,40 @@ warehouse.
 
 ---
 
-## 8. Saved Data (`/data`)
+## 8. Counter (`/counter`)
+
+Counting the bags in a warehouse. Upload the buyer list to get the items, name the
+container, then search and tally each item up from zero.
+
+- **Type, then press Enter.** The search box stays focused and Enter adds one to the
+  best match, so counting is three letters and a keypress rather than hunting
+  through a list with your hands full. The exact name always ranks first.
+- **Big targets** for one-handed use: plus, minus, `+5`, `+10`, `+25`, or type the
+  figure straight in. A count can never go below zero.
+- **Every count starts at zero.** Pre-filling what the list expects would turn a
+  count into a confirmation, and a confirmation is what you get when nobody really
+  counted.
+- **Counted none is not the same as not counted.** Tapping up and back down leaves a
+  real finding of zero; an item nobody reached says so, on the page and on the
+  sheet. That is what stops a half-finished count reading as a complete one.
+- **Add what you find on the floor** — items that were never on the list. They are
+  marked as such, and a name already present is never added twice, so a count can
+  never be split across two rows for one item.
+- **Progress** as you go: bags counted against expected, how many items are left,
+  and how many are short, over or matched. Filters for *not counted* and
+  *doesn't match* to finish off.
+- **Saved as you go.** A count takes hours, so every tap is written down and it
+  appears in backups and on the Saved Data page.
+- **Download the count** — `<Order> - <Container> - Bag Count.xlsx`. Expected and
+  Counted are the only typed figures; the difference, the status and the summary are
+  formulas, so correcting a figure in Excel re-states whether that item is short,
+  over or right. **There are no prices on the sheet** — the list it came from had a
+  per-bag price beside every quantity, and none of it crosses over: a count is about
+  how many bags exist, and the sheet goes to whoever did the counting.
+
+---
+
+## 9. Saved Data (`/data`)
 
 Everything this app remembers lives in your browser. **Saved data** in the top
 bar, reachable from every page, shows what is stored and lets you choose what to
@@ -450,6 +483,7 @@ npx tsx scripts/verify-appdata.ts       # saved data: listing, backup, clearing
 npx tsx scripts/verify-shipment.ts      # order number + container: names, files, privacy
 npx tsx scripts/verify-dues.ts          # balances to be paid: position, workbook, import
 npx tsx scripts/verify-calculation.ts   # markup per item, and that it never leaves the page
+npx tsx scripts/verify-counter.ts       # warehouse count: tallies, status, no prices
 ```
 
 ---
