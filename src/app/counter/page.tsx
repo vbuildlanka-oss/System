@@ -222,7 +222,7 @@ export default function CounterPage() {
       URL.revokeObjectURL(url);
       setNotice(
         totals.untouched > 0
-          ? `Downloaded, but ${totals.untouched} item${totals.untouched === 1 ? "" : "s"} were never counted - those read "Not counted" rather than zero.`
+          ? `Downloaded, but ${totals.untouched} item${totals.untouched === 1 ? "" : "s"} were never counted - those are listed with an empty count rather than a zero.`
           : "Downloaded. Every item was counted.",
       );
     } catch (err) {
@@ -661,9 +661,10 @@ export default function CounterPage() {
             </button>
           </div>
           <p className="mt-2 text-right text-xs text-gray-400">
-            The sheet shows expected against counted with the difference worked
-            out live, and no prices. An item nobody reached reads &quot;Not
-            counted&quot; rather than zero.
+            The sheet holds the item name and the count, with a live total and no
+            prices. An item nobody reached is listed with an empty cell rather
+            than a zero. What was expected, and whether it matches, stays here on
+            the page.
           </p>
         </>
       )}

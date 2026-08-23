@@ -37,12 +37,6 @@ import {
   type CountDoc,
 } from "../src/lib/counter";
 import { buildCountXlsx } from "../src/lib/counterXlsx";
-import {
-  COUNT_MATCHED,
-  COUNT_OVER,
-  COUNT_SHORT,
-  COUNT_UNCOUNTED,
-} from "../src/lib/labels";
 import { LIMITS } from "../src/lib/types";
 import { POST as countExportPost } from "../src/app/api/count-export/route";
 
@@ -399,71 +393,82 @@ async function fileChecks() {
     return v && typeof v === "object" && "result" in v ? v.result : v;
   };
 
-  section("The spreadsheet");
+  section("The spreadsheet: the item and the count, and nothing else");
   check(book.worksheets.length === 1, `one tab (${book.worksheets.length})`);
   check(
-    [1, 2, 3, 4, 5].map((c) => String(ws.getRow(2).getCell(c).value)).join(", ") ===
-      "Item, Expected, Counted, Difference, Status",
-    `with the columns in order (${[1, 2, 3, 4, 5].map((c) => String(ws.getRow(2).getCell(c).value)).join(", ")})`,
+    [1, 2].map((c) => String(ws.getRow(2).getCell(c).value)).join(", ") === "Item, Count",
+    `two columns (${[1, 2].map((c) => String(ws.getRow(2).getCell(c).value)).join(", ")})`,
   );
+  // The comparison belongs on the page, not on the tally - and the expected
+  // quantities have no business on a sheet handed to whoever did the counting.
   check(
-    String(ws.getCell("A1").value).includes("GAOU7441740"),
-    `headed with the container (${String(ws.getCell("A1").value)})`,
+    ws.getCell("C2").value === null || ws.getCell("C2").value === undefined,
+    `there is no third column (${JSON.stringify(ws.getCell("C2").value)})`,
   );
+  let strayColumn = false;
+  ws.eachRow({ includeEmpty: true }, (row) => {
+    for (const col of [3, 4, 5, 6]) {
+      const cell = row.getCell(col).value;
+      if (cell !== null && cell !== undefined && cell !== "") strayColumn = true;
+    }
+  });
+  check(!strayColumn, "and nothing at all sits to the right of the count");
+
+  const labelText: string[] = [];
+  ws.eachRow({ includeEmpty: true }, (row) => {
+    const first = row.getCell(1).value;
+    if (typeof first === "string" && first.length < 40) labelText.push(first);
+  });
+  for (const word of ["Expected", "Difference", "Status", "Matched", "Short", "Over"]) {
+    check(
+      !labelText.includes(word),
+      `nothing is labelled "${word}" any more`,
+    );
+  }
   check(
-    String(ws.getCell("A1").value).includes("Sri Lanka Order 03"),
-    "and the order",
+    String(ws.getCell("A1").value).includes("GAOU7441740") &&
+      String(ws.getCell("A1").value).includes("Sri Lanka Order 03"),
+    `though the heading still says which count this is (${String(ws.getCell("A1").value)})`,
   );
 
-  section("The difference and the status are worked out, not written");
-  check(ws.getCell("B3").value === 14, "expected is typed");
-  check(ws.getCell("C3").value === 14, "counted is typed");
-  check(f("D3") === 'IF(C3="","",C3-B3)', `the difference is derived (${f("D3")})`);
+  section("The count is typed, the total is worked out");
+  check(ws.getCell("A3").value === "3/4 Ladies Jeans", "the item name is written out");
+  check(ws.getCell("B3").value === 14, "with the count beside it");
+  check(ws.getCell("B4").value === 18, "as counted, not as expected");
+  check(ws.getCell("B5").value === 11, "even when more were found than the list said");
   check(
-    f("E3").startsWith('IF(C3="","Not counted"'),
-    `and so is the status (${f("E3").slice(0, 40)}...)`,
+    f(`B${3 + doc.rows.length}`) === `SUM(B3:B${2 + doc.rows.length})`,
+    `the total is a live SUM (${f(`B${3 + doc.rows.length}`)})`,
   );
-  check(r("E3") === COUNT_MATCHED, `a matched row says so (${String(r("E3"))})`);
-  check(r("E4") === COUNT_SHORT, `a short row says so (${String(r("E4"))})`);
-  check(r("D4") === -3, `with the difference (${String(r("D4"))})`);
-  check(r("E5") === COUNT_OVER, `an over row says so (${String(r("E5"))})`);
-  check(r("D5") === 2, "with the difference");
+  check(
+    r(`B${3 + doc.rows.length}`) === totals.counted,
+    `with the right cached answer (${String(r(`B${3 + doc.rows.length}`))})`,
+  );
+  check(
+    String(ws.getCell(`A${3 + doc.rows.length}`).value) === "Total",
+    "and the row is labelled",
+  );
 
   section("An item nobody reached is not reported as zero");
-  const untouched = ws.getCell("C6");
+  const untouched = ws.getCell("B6");
   check(
     untouched.value === null || untouched.value === undefined,
-    `its counted cell is left empty (${JSON.stringify(untouched.value)})`,
-  );
-  check(r("E6") === COUNT_UNCOUNTED, `and it reads not counted (${String(r("E6"))})`);
-  // Asserted as "no number is claimed" rather than as an empty string: ExcelJS's
-  // reader discards a cached empty result, though the file carries it.
-  check(
-    typeof r("D6") !== "number",
-    `with no difference claimed (${JSON.stringify(r("D6"))})`,
+    `its cell is left empty (${JSON.stringify(untouched.value)})`,
   );
   check(
-    f("D6") === 'IF(C6="","",C6-B6)',
-    `the difference stays guarded on an uncounted row (${f("D6")})`,
+    String(ws.getCell("A6").value) === "Cotton Scarf",
+    "though the item is still listed, so the gap is visible",
   );
-
-  section("Totals and the summary");
-  check(f("B8") === "SUM(B3:B7)", `expected is summed (${f("B8")})`);
-  check(f("C8") === "SUM(C3:C7)", "so is counted");
-  check(f("D8") === "C8-B8", `and the difference follows the two (${f("D8")})`);
-  check(r("C8") === totals.counted, `cached correctly (${String(r("C8"))})`);
-
-  // Summary block: header on row 10, four results, then the item count.
-  check(String(ws.getCell("A11").value) === COUNT_MATCHED, "the summary names each result");
+  // SUM ignores an empty cell, so an uncounted item cannot be totalled as none.
   check(
-    f("B11") === `COUNTIF($E$3:$E$7,"${COUNT_MATCHED}")`,
-    `counted with a COUNTIF over the status column (${f("B11")})`,
+    totals.counted === 14 + 18 + 11 + 4,
+    `and the total leaves it out (${totals.counted})`,
   );
-  check(r("B11") === totals.matched, `matched (${String(r("B11"))})`);
-  check(r("B12") === totals.short, `short (${String(r("B12"))})`);
-  check(r("B13") === totals.over, `over (${String(r("B13"))})`);
-  check(r("B14") === totals.untouched, `not counted (${String(r("B14"))})`);
-  check(r("B15") === totals.items, `and the items add up (${String(r("B15"))})`);
+  const note = String(ws.getCell(`A${3 + doc.rows.length + 2}`).value ?? "");
+  check(
+    note.includes("never counted") && note.includes("empty"),
+    "the footer says what an empty cell means",
+  );
 
   section("No price reaches the count sheet");
   // The list this came from had a per-bag price and a line total beside every

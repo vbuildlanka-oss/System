@@ -40,17 +40,3 @@ export const OWED_LABEL = "Owed to us";
  */
 export const FAST_LABEL = "Fast";
 export const STEADY_LABEL = "Steady";
-
-/**
- * How a warehouse count reads on its sheet.
- *
- * Words rather than numbers, so the sheet can be read at a glance, and real values
- * rather than formatting, so the summary below can count them with COUNTIF.
- *
- * "Not counted" is deliberately not a synonym for zero: zero is a finding, and not
- * counted is an admission that nobody reached that item.
- */
-export const COUNT_MATCHED = "Matched";
-export const COUNT_SHORT = "Short";
-export const COUNT_OVER = "Over";
-export const COUNT_UNCOUNTED = "Not counted";

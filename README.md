@@ -394,12 +394,13 @@ container, then search and tally each item up from zero.
   *doesn't match* to finish off.
 - **Saved as you go.** A count takes hours, so every tap is written down and it
   appears in backups and on the Saved Data page.
-- **Download the count** — `<Order> - <Container> - Bag Count.xlsx`. Expected and
-  Counted are the only typed figures; the difference, the status and the summary are
-  formulas, so correcting a figure in Excel re-states whether that item is short,
-  over or right. **There are no prices on the sheet** — the list it came from had a
-  per-bag price beside every quantity, and none of it crosses over: a count is about
-  how many bags exist, and the sheet goes to whoever did the counting.
+- **Download the count** — `<Order> - <Container> - Bag Count.xlsx`. Just two
+  columns, **Item and Count**, with a live total. What the list expected and whether
+  it matches stay on the page: this sheet is the tally itself, and printing the
+  expected quantities onto it would hand them to whoever did the counting. An item
+  nobody reached is listed with an **empty** cell rather than a zero, and the total
+  leaves it out. **There are no prices on the sheet** either — the list it came from
+  had a per-bag price beside every quantity, and none of it crosses over.
 
 ---
 
@@ -483,7 +484,7 @@ npx tsx scripts/verify-appdata.ts       # saved data: listing, backup, clearing
 npx tsx scripts/verify-shipment.ts      # order number + container: names, files, privacy
 npx tsx scripts/verify-dues.ts          # balances to be paid: position, workbook, import
 npx tsx scripts/verify-calculation.ts   # markup per item, and that it never leaves the page
-npx tsx scripts/verify-counter.ts       # warehouse count: tallies, status, no prices
+npx tsx scripts/verify-counter.ts       # warehouse count: tallies, two-column sheet
 ```
 
 ---
