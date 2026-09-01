@@ -9,7 +9,7 @@
  *    than leaving a stray dash
  *  - values already used anywhere in the system can be offered as suggestions
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import {
   cleanShipment,
   collectShipmentValues,
@@ -22,6 +22,7 @@ import {
 import { buyerPriceFilename, documentFilename } from "../src/lib/types";
 import { orderNumberFromFilename } from "../src/lib/bagManifest";
 import { POST as generatePost } from "../src/app/api/generate/route";
+import { POST as exportPost } from "../src/app/api/export/route";
 import type { NextRequest } from "next/server";
 
 const pdfParse = require("pdf-parse/lib/pdf-parse.js");
@@ -202,6 +203,109 @@ async function pdfChecks() {
 
   mkdirSync(".verify", { recursive: true });
   writeFileSync(".verify/buyer-price.pdf", buf);
+
+  /* ---------------------------------------------------------------------- */
+  section("Every document the buyer gets, not just the price list");
+
+  // The editor exports two more documents that go out - the updated sheet and a
+  // sales receipt - and the rule has to hold for those too.
+  const exportReq = (body: unknown): NextRequest =>
+    new Request("http://localhost/api/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }) as unknown as NextRequest;
+
+  for (const label of ["Updated", "Sales"]) {
+    const out = await exportPost(
+      exportReq({
+        title: "Sri Lanka Order 03",
+        label,
+        subtitle: `${label} 14 Aug 2026`,
+        rows: [
+          { id: "1", name: "Anorak", qty: 10, perBag: 24_000, totalOverride: null },
+        ],
+        buyer: { name: "Ahmad Trading", phone: "0771234567" },
+        refNo: "BB-3F7K-260814-001",
+        // Smuggled in, exactly as for the price list.
+        containerNumber: CONTAINER,
+        containerId: CONTAINER,
+      }),
+    );
+    check(out.status === 200, `the ${label} document is generated (${out.status})`);
+    const outName = out.headers.get("Content-Disposition") ?? "";
+    check(
+      !outName.includes(CONTAINER) && !outName.includes("GAOU"),
+      `no container in the ${label} file name (${outName.replace(/.*filename="?/, "").replace(/"$/, "")})`,
+    );
+    const outText = String(
+      (await pdfParse(Buffer.from(await out.arrayBuffer()), { version: "v2.0.550" }))
+        .text,
+    );
+    check(outText.includes("Anorak"), `the ${label} document has the items on it`);
+    check(
+      !outText.includes(CONTAINER) && !outText.includes("GAOU"),
+      `and no container ID anywhere in the ${label} document`,
+    );
+    check(
+      !outText.toLowerCase().includes("container"),
+      `nor the word container in the ${label} document`,
+    );
+  }
+
+  /* ---------------------------------------------------------------------- */
+  section("A container in the file name must not become the sheet title");
+
+  // The editor titles a sheet after the file it came from, and that title is
+  // printed on the buyer's copy. Reading the name without lifting the container
+  // out first folded it into the title: "GAOU7441740 Sri Lanka Order 3.pdf"
+  // became "GAOU Sri Lanka Order 7441740", which put the whole container number
+  // on a document that goes out.
+  for (const name of [
+    `Sri Lanka Order 3 2026 ${CONTAINER}.pdf`,
+    `${CONTAINER} Sri Lanka Order 3.pdf`,
+    `Sri Lanka Order 3 - ${CONTAINER} - Bag Count.pdf`,
+  ]) {
+    const title = shipmentFromFilename(name).orderNumber;
+    check(
+      !title.includes("GAOU") && !/7441740/.test(title),
+      `"${name}" gives a title with no trace of the container (${title})`,
+    );
+  }
+
+  // And the title really does reach the buyer's document, so the check above is
+  // guarding something that matters.
+  const titled = await exportPost(
+    exportReq({
+      title: shipmentFromFilename(`${CONTAINER} Sri Lanka Order 3.pdf`).orderNumber,
+      label: "Updated",
+      rows: [{ id: "1", name: "Anorak", qty: 10, perBag: 24_000, totalOverride: null }],
+      buyer: { name: "Ahmad Trading", phone: "0771234567" },
+    }),
+  );
+  const titledText = String(
+    (await pdfParse(Buffer.from(await titled.arrayBuffer()), { version: "v2.0.550" }))
+      .text,
+  );
+  check(
+    titledText.includes("Sri Lanka Order 03"),
+    `the order number is printed on the editor's document (${titledText.slice(0, 40).replace(/\n/g, " ")})`,
+  );
+  check(
+    !titledText.includes("GAOU") && !titledText.includes("7441740"),
+    "and the container it was named after is not",
+  );
+
+  // The editor must not go back to reading the name the unguarded way.
+  const editorSrc = readFileSync("src/app/edit/page.tsx", "utf8");
+  check(
+    /shipmentFromFilename\(file\.name\)\.orderNumber/.test(editorSrc),
+    "the editor reads the order number through shipmentFromFilename",
+  );
+  check(
+    !/orderNumberFromFilename/.test(editorSrc),
+    "and not straight off the file name",
+  );
 
   if (failures > 0) {
     console.error(`\n${failures} CHECK(S) FAILED`);

@@ -174,6 +174,10 @@ export default function Home() {
       setFile(null);
     } finally {
       setLoading(false);
+      // Clear the input, or picking the same file again fires no change event
+      // and the retry does nothing at all. That is what made a single failure
+      // look permanent and left refreshing the page as the only way out.
+      if (inputRef.current) inputRef.current.value = "";
     }
   }, [markup, persist]);
 

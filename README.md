@@ -29,8 +29,12 @@ the recalculated table, and download a clean, buyer-ready price list PDF.
   be taken as the order number.
 - **The buyer never sees a container ID.** This document goes out, so the
   container is kept off it: not in the heading, not in the file name, and ignored
-  if one is sent to the route. The suite reads the generated PDF's text back and
-  fails if it appears.
+  if one is sent to the route. The same holds for every other document that
+  reaches a buyer — the updated sheet and the sales receipt from the Order
+  Editor. The suite reads each generated PDF's text back and fails if a container
+  code, the owner prefix, or even the word *container* appears. Only the bag
+  manifest carries one, because a manifest is a document about a container and
+  stays in-house.
 - **Buyer details**: name and phone are printed at the top of the PDF, with an
   auto-numbered (editable) reference
 - **Download** a branded, multi-page PDF
@@ -69,7 +73,12 @@ keep a live sheet as customers buy.
 - **Several files open at once.** Opening a file adds a tab rather than replacing
   what is already there. Each tab keeps its own rows, sales, buyer and reference,
   shows its bag count, and can be closed on its own. A sheet opened from a file
-  takes its name from the file name (see the order number note below).
+  takes its name from the file name (see the order number note below). A
+  container ID in that name is lifted out before the order number is read, since
+  this title is printed on the buyer's copy — read the name unguarded and
+  `GAOU7441740 Sri Lanka Order 3.pdf` becomes the title
+  `GAOU Sri Lanka Order 7441740`, putting the container on a document that goes
+  out.
 
 - **Edit any value** inline: item name, quantity, per-bag price, and total
 - **Total is auto-calculated** (Qty x Per Bag). Type into the Total cell to
@@ -486,6 +495,34 @@ delete. Back up, choose, delete — in that order down the page.
 
 ---
 
+## When an upload fails
+
+An upload used to answer "it may be corrupted" whatever had gone wrong, which was
+usually untrue and never useful. Each failure now says which one it was:
+
+| What the message says | What actually happened |
+|---|---|
+| The PDF looks incomplete | It has no `%%EOF`, so the file is cut short. Usually it was uploaded while the browser was still writing it — download the count, upload it immediately, and you can catch it half-written. Waiting for the download to finish fixes it. |
+| That file is not a PDF | No `%PDF-` header. Typically an HTML error page or a renamed file. |
+| The PDF is password protected | Save an unprotected copy and upload that. |
+| Could not read that PDF | Four different pdf.js engines all refused it. |
+| Could not read any items | The PDF opened but has no text in it — a scan or a photo. The figures have to be typed in. |
+
+Two faults sat behind the intermittent version of this:
+
+- **The engine fallback was not running.** `pdf-parse` caches its engine in a
+  module-level variable, so its `version` option is honoured only on the first
+  call in the process and ignored ever after. Asking it for four engines returned
+  the same engine four times. The builds are now loaded directly, so a document
+  the default engine rejects really is retried on the others, and whichever
+  engine last succeeded is tried first next time.
+- **Retrying did nothing.** The file input was not cleared after a failed read,
+  so choosing the same file again fired no `change` event — the error stayed on
+  screen and reloading the page was the only way forward. Every uploading page
+  now clears its input as the file is taken, and the suite fails if one stops.
+
+---
+
 ## Deploy to Vercel (1-click)
 
 This app lives at the repository root, so Vercel auto-detects it as a Next.js
@@ -531,9 +568,10 @@ npx tsx scripts/verify-dues.ts          # balances to be paid: position, workboo
 npx tsx scripts/verify-calculation.ts   # markup per item, and that it never leaves the page
 npx tsx scripts/verify-counter.ts       # warehouse count: tallies, two-column sheet
 npx tsx scripts/verify-count-to-price.ts # count PDF -> price list round trip, cost gate
+npx tsx scripts/verify-pdf-read.ts      # why an upload failed, and retrying it
 ```
 
-1,536 checks. The count-to-price suite renders a real count PDF, parses it back
+1,591 checks. The count-to-price suite renders a real count PDF, parses it back
 with the same code the upload path uses, and fails if a single item name or count
 comes out different — the two files are a contract, so the round trip is tested
 rather than assumed.
@@ -544,7 +582,7 @@ rather than assumed.
 
 | Step | File |
 |------|------|
-| Parse the uploaded PDF | `src/lib/parseOrder.ts` |
+| Parse the uploaded PDF | `src/lib/parseOrder.ts` (engine fallback, `PdfReadError`) |
 | Apply markup + recompute totals | `src/lib/types.ts` (`buildBuyerPriceList`) |
 | Editable rows + totals | `src/lib/types.ts` (`buildSheetFromRows`) |
 | Buyer validation + memory | `src/lib/buyer.ts` |

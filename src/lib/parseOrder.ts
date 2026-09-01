@@ -1,45 +1,227 @@
 import type { OrderItem, ParsedOrder } from "./types";
 
-// Import the implementation file directly. The pdf-parse index module runs a
-// debug harness that tries to read a sample file; importing the lib path skips
-// that and is the recommended way to use it inside a server bundle.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const pdf = require("pdf-parse/lib/pdf-parse.js");
+/**
+ * Why a PDF could not be read, so the caller can say something true about it
+ * instead of blaming the file. "It may be corrupted" sent people back to
+ * re-upload a file that was never the problem.
+ */
+export type PdfFailure =
+  | "not-a-pdf" // no %PDF- header: an HTML error page, a renamed file
+  | "incomplete" // header but no %%EOF: still downloading, or truncated
+  | "encrypted" // password protected
+  | "unreadable"; // every engine refused it
+
+export class PdfReadError extends Error {
+  readonly failure: PdfFailure;
+  /** Safe to show a user: says what to do, not just that it went wrong. */
+  readonly userMessage: string;
+
+  constructor(failure: PdfFailure, userMessage: string, cause?: unknown) {
+    super(`${failure}: ${userMessage}`);
+    this.name = "PdfReadError";
+    this.failure = failure;
+    this.userMessage = userMessage;
+    this.cause = cause;
+  }
+}
 
 /**
  * pdf-parse ships several pdf.js engines. The default one occasionally rejects
  * perfectly valid documents with "bad XRef entry" - small PDFs produced by this
- * app were one example - and the failure is not even consistent between runs.
+ * app were one example - so we try them in turn rather than trust one.
  *
- * Rather than trust a single engine, we try them in turn. The default comes
- * first because it is the one proven against the real supplier sheets; the
- * others are only reached if it fails or finds no text at all.
+ * The default comes first because it is the one proven against the real
+ * supplier sheets; the others are only reached if it fails or finds no text.
+ *
+ * We deliberately do NOT go through pdf-parse's own wrapper to do this. It
+ * caches the engine in a module-level variable:
+ *
+ *     PDFJS = PDFJS ? PDFJS : require(`./pdf.js/${options.version}/build/pdf.js`)
+ *
+ * so its `version` option is honoured only on the first call in the process and
+ * silently ignored ever after. Asking it for four engines got the same engine
+ * four times, which meant the fallback below never actually fell back. Loading
+ * the builds ourselves is what makes it real. They are separate module objects
+ * and do not interfere with each other.
  */
 const ENGINES = ["v1.10.100", "v2.0.550", "v1.10.88", "v1.9.426"] as const;
+type Engine = (typeof ENGINES)[number];
+
+interface TextItem {
+  str: string;
+  transform: number[];
+}
+interface PdfPage {
+  getTextContent(options: unknown): Promise<{ items: TextItem[] }>;
+}
+interface PdfDocument {
+  numPages: number;
+  getPage(n: number): Promise<PdfPage>;
+  destroy(): void;
+}
+interface PdfEngine {
+  version: string;
+  disableWorker: boolean;
+  getDocument(data: Uint8Array): Promise<PdfDocument>;
+}
+
+/**
+ * Static requires, one per engine, so the bundler can resolve each path. A
+ * template-string require would leave it guessing. Called lazily: a file that
+ * the first engine reads never loads the other three.
+ */
+/* eslint-disable @typescript-eslint/no-var-requires */
+const LOADERS: Record<Engine, () => PdfEngine> = {
+  "v1.10.100": () => require("pdf-parse/lib/pdf.js/v1.10.100/build/pdf.js"),
+  "v2.0.550": () => require("pdf-parse/lib/pdf.js/v2.0.550/build/pdf.js"),
+  "v1.10.88": () => require("pdf-parse/lib/pdf.js/v1.10.88/build/pdf.js"),
+  "v1.9.426": () => require("pdf-parse/lib/pdf.js/v1.9.426/build/pdf.js"),
+};
+/* eslint-enable @typescript-eslint/no-var-requires */
+
+const engines = new Map<Engine, PdfEngine>();
+
+function loadEngine(version: Engine): PdfEngine {
+  const cached = engines.get(version);
+  if (cached) return cached;
+  const engine = LOADERS[version]();
+  // Workers need a script URL, which there isn't one of on a server.
+  engine.disableWorker = true;
+  engines.set(version, engine);
+  return engine;
+}
+
+/** The engine that last read a file, tried first next time. */
+let preferred: Engine = ENGINES[0];
+
+/**
+ * Pull the text out one page at a time.
+ *
+ * The joining here is not a free choice: every pattern further down this file
+ * was written against pdf-parse's own output, so this reproduces its
+ * `render_page` exactly - items on one line concatenated with no separator, a
+ * newline when the y coordinate changes, and each page prefixed with a blank
+ * line. Changing it would quietly re-break parsing of every supplier sheet.
+ */
+async function extractWith(version: Engine, bytes: Uint8Array): Promise<string> {
+  const engine = loadEngine(version);
+  // A fresh copy per attempt: pdf.js takes ownership of what it is handed, so a
+  // failed attempt must not be able to spoil the buffer for the next engine.
+  const doc = await engine.getDocument(new Uint8Array(bytes));
+  try {
+    let text = "";
+    for (let i = 1; i <= doc.numPages; i++) {
+      let pageText = "";
+      try {
+        const page = await doc.getPage(i);
+        const content = await page.getTextContent({
+          normalizeWhitespace: false,
+          disableCombineTextItems: false,
+        });
+        let lastY: number | undefined;
+        for (const item of content.items) {
+          if (lastY === item.transform[5] || !lastY) pageText += item.str;
+          else pageText += `\n${item.str}`;
+          lastY = item.transform[5];
+        }
+      } catch {
+        // One unreadable page should not lose the other twenty.
+        pageText = "";
+      }
+      text = `${text}\n\n${pageText}`;
+    }
+    return text;
+  } finally {
+    try {
+      doc.destroy();
+    } catch {
+      /* nothing useful to do if teardown fails */
+    }
+  }
+}
+
+function isEncrypted(err: unknown): boolean {
+  const name = (err as { name?: string })?.name ?? "";
+  const message = (err as { message?: string })?.message ?? "";
+  return name === "PasswordException" || /password/i.test(message);
+}
+
+/**
+ * Check the envelope before blaming the contents.
+ *
+ * A PDF that is missing its trailer is usually one that was uploaded while the
+ * browser was still writing it - download the count, upload it straight away,
+ * and you can catch it half-written. That reads as "bad XRef entry" deep inside
+ * pdf.js, which is a terrible thing to show someone: the file is fine, it just
+ * was not finished yet, and trying again works. So we say that instead.
+ */
+function checkEnvelope(bytes: Uint8Array): void {
+  // The spec allows junk before the header, so look in the first kilobyte.
+  const head = Buffer.from(
+    bytes.subarray(0, Math.min(bytes.length, 1024)),
+  ).toString("latin1");
+  if (!head.includes("%PDF-")) {
+    throw new PdfReadError(
+      "not-a-pdf",
+      "That file is not a PDF. If it was downloaded from an email or a web page, open it first and check it is the order sheet.",
+    );
+  }
+  // %%EOF is the last thing in a finished PDF, give or take some whitespace.
+  const tail = Buffer.from(
+    bytes.subarray(Math.max(0, bytes.length - 2048)),
+  ).toString("latin1");
+  if (!tail.includes("%%EOF")) {
+    throw new PdfReadError(
+      "incomplete",
+      "That PDF looks incomplete - the end of the file is missing. If it is still downloading, wait for it to finish and upload it again.",
+    );
+  }
+}
 
 async function extractText(buffer: Buffer): Promise<string> {
-  let emptyResult: string | null = null;
+  const bytes = new Uint8Array(buffer);
+  checkEnvelope(bytes);
+
+  // Whichever engine worked last time goes first, then the rest in order.
+  const order: Engine[] = [
+    preferred,
+    ...ENGINES.filter((v) => v !== preferred),
+  ];
+
+  let sawEmpty = false;
   let lastError: unknown = null;
 
-  for (const version of ENGINES) {
+  for (const version of order) {
     try {
-      const data = await pdf(buffer, { version });
-      const text = String(data?.text ?? "");
-      if (text.trim() !== "") return text;
+      const text = await extractWith(version, bytes);
+      if (text.trim() !== "") {
+        preferred = version;
+        return text;
+      }
       // Readable but no text: remember it, another engine may do better.
-      emptyResult = text;
+      sawEmpty = true;
     } catch (err) {
       lastError = err;
+      if (isEncrypted(err)) {
+        throw new PdfReadError(
+          "encrypted",
+          "That PDF is password protected. Open it, save an unprotected copy, and upload that.",
+          err,
+        );
+      }
     }
   }
 
-  // Every engine agreed there is no text (likely a scan) - let the caller
-  // report "no items found" rather than a hard failure.
-  if (emptyResult !== null) return emptyResult;
+  // Every engine opened it and agreed there is no text in it - likely a scan.
+  // Hand back the empty string and let the caller say "no items found", which
+  // is more use than a hard failure.
+  if (sawEmpty) return "";
 
-  throw lastError instanceof Error
-    ? lastError
-    : new Error("Could not read the PDF.");
+  throw new PdfReadError(
+    "unreadable",
+    "Could not read that PDF. If it is a scan or a photo there is no text in it to read, so the figures will have to be entered by hand.",
+    lastError,
+  );
 }
 
 /** "Rs35,000.00" | "35,000.00" -> 35000 */

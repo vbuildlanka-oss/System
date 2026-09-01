@@ -42,7 +42,7 @@ import {
 } from "@/lib/buyer";
 import BuyerFields from "@/components/BuyerFields";
 import { addLots, loadStockpile, saveStockpile } from "@/lib/stockpile";
-import { orderNumberFromFilename } from "@/lib/bagManifest";
+import { shipmentFromFilename } from "@/lib/shipment";
 import { readLocal, removeLocal, writeLocal } from "@/lib/storage";
 import { cn } from "@/lib/cn";
 
@@ -395,8 +395,14 @@ export default function EditPage() {
         const ref = nextRefNo();
         openSheet({
           id: newId(),
-          // The number in the file name is what gets tracked.
-          title: orderNumberFromFilename(file.name) || parsed.title,
+          // The number in the file name is what gets tracked. Read it through
+          // shipmentFromFilename, which lifts a container ID out of the name
+          // before looking for the order number. Reading the name directly used
+          // to fold the container into the title - "GAOU7441740 Sri Lanka Order
+          // 3.pdf" became "GAOU Sri Lanka Order 7441740" - and this title is
+          // printed on the buyer's PDF and used to name it. The container is
+          // ours, not theirs.
+          title: shipmentFromFilename(file.name).orderNumber || parsed.title,
           rows: parsed.items.map((it) => ({
             id: newId(),
             name: it.name,
@@ -847,6 +853,11 @@ export default function EditPage() {
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0];
+          // Clear it straight away: the File is already in hand, and leaving the
+          // input set means choosing the same file again fires no event at all -
+          // so a failed read could not be retried, and the same sheet could not
+          // be opened in a second tab, without reloading the page.
+          e.target.value = "";
           if (f) loadPdf(f);
         }}
       />
@@ -857,6 +868,7 @@ export default function EditPage() {
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0];
+          e.target.value = "";
           if (f) loadSession(f);
         }}
       />

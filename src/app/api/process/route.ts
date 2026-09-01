@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { parseOrderPdf } from "@/lib/parseOrder";
+import { parseOrderPdf, PdfReadError } from "@/lib/parseOrder";
 import { parseCsvOrder, parseXlsxOrder } from "@/lib/parseTabular";
 import type { ParsedOrder } from "@/lib/types";
 
@@ -80,12 +80,34 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(parsed);
   } catch (err) {
-    console.error("process error:", err);
+    // Log the real thing. "It may be corrupted" told the user nothing and told
+    // us nothing either, so a recurring failure left no trace to work from.
+    console.error("process error:", { kind, err });
+
+    // A PDF we could not read knows why, and what it says is worth showing:
+    // a half-downloaded file and a scan need different things done about them.
+    if (err instanceof PdfReadError) {
+      return NextResponse.json(
+        { error: err.userMessage },
+        { status: err.failure === "unreadable" ? 422 : 400 },
+      );
+    }
+
+    if (kind === null) {
+      // We never got as far as looking at the file, so this is not about its
+      // contents - claiming it was corrupt sent people off re-saving a file
+      // that was fine.
+      return NextResponse.json(
+        { error: "The upload did not arrive in one piece. Please try again." },
+        { status: 400 },
+      );
+    }
+
     return NextResponse.json(
       {
         error:
-          kind === "pdf" || kind === null
-            ? "Failed to read the PDF. It may be scanned or corrupted."
+          kind === "pdf"
+            ? "Failed to read that PDF."
             : "Failed to read that file. It may be corrupted or password protected.",
       },
       { status: 500 },
