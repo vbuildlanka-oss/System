@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   ClipboardCheck,
+  FileText,
   Loader2,
   Minus,
   Plus,
@@ -56,7 +57,8 @@ export default function CounterPage() {
   const [doc, setDoc] = useState<CountDoc | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
-  const [building, setBuilding] = useState(false);
+  /** Which file is being built, so only that button spins. */
+  const [building, setBuilding] = useState<"xlsx" | "pdf" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -188,18 +190,23 @@ export default function CounterPage() {
     setLastTouched(result.row.id);
   }, [doc, newItem, persist]);
 
-  const download = useCallback(async () => {
+  const download = useCallback(
+    async (format: "xlsx" | "pdf") => {
     if (!doc || doc.rows.length === 0) {
       setError("There is nothing to export yet.");
       return;
     }
-    setBuilding(true);
+    if (format === "pdf" && totals.touched === 0) {
+      setError("Count something first - the PDF would have no rows on it.");
+      return;
+    }
+    setBuilding(format);
     setError(null);
     try {
       const res = await fetch("/api/count-export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ doc }),
+        body: JSON.stringify({ doc, format }),
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as {
@@ -215,24 +222,30 @@ export default function CounterPage() {
         .map((part) => part.replace(/[^\w\d\- ]+/g, " ").trim())
         .filter((part) => part !== "")
         .join(" - ");
-      a.download = `${stem || "Warehouse"} - Bag Count.xlsx`;
+      a.download = `${stem || "Warehouse"} - Bag Count.${format}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
       setNotice(
-        totals.untouched > 0
-          ? `Downloaded, but ${totals.untouched} item${totals.untouched === 1 ? "" : "s"} were never counted - those are listed with an empty count rather than a zero.`
-          : "Downloaded. Every item was counted.",
+        format === "pdf"
+          ? totals.untouched > 0
+            ? `PDF downloaded. ${totals.untouched} item${totals.untouched === 1 ? " that was" : "s that were"} never counted ${totals.untouched === 1 ? "is" : "are"} left off it. Upload this into the Price List to put prices against the count.`
+            : "PDF downloaded. Upload this into the Price List to put prices against the count."
+          : totals.untouched > 0
+            ? `Spreadsheet downloaded, but ${totals.untouched} item${totals.untouched === 1 ? "" : "s"} were never counted - those are listed with an empty count rather than a zero.`
+            : "Spreadsheet downloaded. Every item was counted.",
       );
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "The spreadsheet could not be built.",
+        err instanceof Error ? err.message : "The file could not be built.",
       );
     } finally {
-      setBuilding(false);
+      setBuilding(null);
     }
-  }, [doc, totals.untouched]);
+  },
+  [doc, totals.touched, totals.untouched],
+  );
 
   const rows = doc?.rows ?? [];
   const complete = doc !== null && isCountComplete(doc);
@@ -648,23 +661,37 @@ export default function CounterPage() {
               New list
             </button>
             <button
-              onClick={download}
-              disabled={building}
-              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-40"
+              onClick={() => download("xlsx")}
+              disabled={building !== null}
+              className="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-white px-4 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-50 disabled:opacity-40"
             >
-              {building ? (
+              {building === "xlsx" ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <SheetIcon className="h-4 w-4" />
               )}
-              {building ? "Building..." : "Download the count"}
+              {building === "xlsx" ? "Building..." : "Spreadsheet"}
+            </button>
+            <button
+              onClick={() => download("pdf")}
+              disabled={building !== null || totals.touched === 0}
+              title="A PDF of the count. Upload this into the Price List to put prices against it."
+              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-40"
+            >
+              {building === "pdf" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <FileText className="h-4 w-4" />
+              )}
+              {building === "pdf" ? "Building..." : "PDF for pricing"}
             </button>
           </div>
           <p className="mt-2 text-right text-xs text-gray-400">
-            The sheet holds the item name and the count, with a live total and no
-            prices. An item nobody reached is listed with an empty cell rather
-            than a zero. What was expected, and whether it matches, stays here on
-            the page.
+            Both files hold the item name and the count, and no prices. The
+            spreadsheet lists an item nobody reached with an empty cell; the PDF
+            leaves it off and says how many were missed. Upload the{" "}
+            <span className="font-medium text-gray-500">PDF for pricing</span>{" "}
+            into the Price List to put an original price against each count.
           </p>
         </>
       )}

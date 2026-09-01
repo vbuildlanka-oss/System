@@ -65,6 +65,21 @@ const REQUESTS = JSON.stringify({ requests: [{}], sources: [{}, {}] });
 const BALANCE = JSON.stringify({ expenses: [{}, {}, {}, {}], turnover: [{}, {}] });
 const MANIFESTS = JSON.stringify({ manifests: [{}] });
 const BUYERS = JSON.stringify([{}, {}]);
+const PRICELIST = JSON.stringify({
+  orderNumber: "Sri Lanka Order 03",
+  markup: 2000,
+  rows: [
+    { name: "Anorak", qty: 21, costPerBag: 24000 },
+    { name: "Blanket", qty: 12, costPerBag: 0 },
+  ],
+});
+const PRICEBOOK = JSON.stringify({
+  prices: {
+    anorak: { name: "Anorak", costPerBag: 24000, at: "2026-08-01T00:00:00.000Z" },
+    blanket: { name: "Blanket", costPerBag: 15000, at: "2026-08-02T00:00:00.000Z" },
+    "cotton scarf": { name: "Cotton Scarf", costPerBag: 12000, at: "2026-08-03T00:00:00.000Z" },
+  },
+});
 const COUNT = JSON.stringify({
   containerId: "GAOU7441740",
   rows: [
@@ -91,6 +106,8 @@ function populated(): FakeStore {
     "balebook.buyers.v1": BUYERS,
     "balebook.calculation.v1": CALC,
     "balebook.bagCount.v1": COUNT,
+    "balebook.priceList.v1": PRICELIST,
+    "balebook.priceBook.v1": PRICEBOOK,
     "balebook.deviceId.v1": "3F7K",
     "balebook.refCounter.v1": JSON.stringify({ date: "260814", n: 7 }),
     "balebook.usedRefs.v1": JSON.stringify(["BB-3F7K-260814-001", "BB-3F7K-260814-002"]),
@@ -107,7 +124,7 @@ section("Listing what is stored");
   const store = populated();
   const report = inspectStoredData(store);
 
-  check(report.sections.length === 8, `every section is listed (${report.sections.length})`);
+  check(report.sections.length === 10, `every section is listed (${report.sections.length})`);
   check(!report.empty, "and the store is not reported as empty");
 
   const by = (id: string) => report.sections.find((s) => s.id === id);
@@ -129,6 +146,14 @@ section("Listing what is stored");
   check(
     by("bagCount")?.detail === "3 items counted",
     `the warehouse count is counted (${by("bagCount")?.detail})`,
+  );
+  check(
+    by("priceList")?.detail === "2 items priced",
+    `the price list in progress is counted (${by("priceList")?.detail})`,
+  );
+  check(
+    by("priceBook")?.detail === "3 items remembered",
+    `and the remembered prices are counted (${by("priceBook")?.detail})`,
   );
   check(by("bagManifests")?.detail === "1 manifest", `a single manifest reads as singular (${by("bagManifests")?.detail})`);
   check(
@@ -214,7 +239,15 @@ section("Clearing everything");
     store.getItem("balebook.bagCount.v1") === null,
     "and the warehouse count",
   );
-  check(result.sections.length === 8, `all eight sections are reported cleared (${result.sections.length})`);
+  check(
+    store.getItem("balebook.priceList.v1") === null,
+    "the half-finished price list goes too",
+  );
+  check(
+    store.getItem("balebook.priceBook.v1") === null,
+    "and so do the remembered prices",
+  );
+  check(result.sections.length === 10, `all ten sections are reported cleared (${result.sections.length})`);
 
   // The whole point of clearing: what the pages load afterwards is nothing.
   const after = inspectStoredData(store);
@@ -352,7 +385,7 @@ section("Backing up before clearing");
   check(!Number.isNaN(Date.parse(backup.savedAt)), `and when it was taken (${backup.savedAt})`);
 
   const keys = Object.keys(backup.data);
-  check(keys.length === 11, `every key of ours is captured (${keys.length})`);
+  check(keys.length === 13, `every key of ours is captured (${keys.length})`);
   check(
     backup.data["balebook.balanceSheet.v1"] === BALANCE,
     "with the data exactly as stored, byte for byte",
@@ -404,7 +437,7 @@ section("Restoring a backup");
   const result = restoreStoredData(backup, target);
 
   check(result.problem === undefined, `a real backup restores (${result.problem ?? "no problem"})`);
-  check(result.restored.length === 11, `every key comes back (${result.restored.length})`);
+  check(result.restored.length === 13, `every key comes back (${result.restored.length})`);
   check(
     target.getItem("balebook.balanceSheet.v1") === BALANCE,
     "with the data byte for byte",
@@ -566,7 +599,7 @@ section("When there is no store");
   // Server rendering, or a browser with storage switched off.
   const report = inspectStoredData(null);
   check(report.empty, "listing reports an empty store rather than throwing");
-  check(report.sections.length === 8, "and still names every section");
+  check(report.sections.length === 10, "and still names every section");
 
   const result = clearStoredData({ store: null });
   check(result.removed.length === 0, "clearing does nothing rather than throwing");
@@ -602,7 +635,7 @@ section("When the store misbehaves");
   let threw = false;
   try {
     const report = inspectStoredData(hostile);
-    check(report.sections.length === 8, "listing survives a store that throws");
+    check(report.sections.length === 10, "listing survives a store that throws");
   } catch {
     threw = true;
   }

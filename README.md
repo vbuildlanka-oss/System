@@ -35,6 +35,32 @@ the recalculated table, and download a clean, buyer-ready price list PDF.
   auto-numbered (editable) reference
 - **Download** a branded, multi-page PDF
 
+### Pricing a warehouse count
+
+A file from the [Counter](#8-counter-counter) carries item names and counts and
+**no prices at all** — the counting was done before anyone worked out what a bag
+cost. So the per-bag cost is typed in here, and the markup goes on top of it.
+
+- **Cost / bag is an editable column.** Rows without one are tinted amber and
+  their selling price and line total read `—` rather than a figure, because a
+  price built on a cost of zero is the markup wearing a cost's clothes.
+- **You cannot download the buyer's copy until every bag has a cost.** Not a
+  warning you can click past: the button is disabled and it names what is still
+  waiting. A bag left at zero would be quoted to the buyer at *the markup alone*,
+  which both undercharges and puts the markup on paper — the one number that must
+  never leave the building.
+- **It remembers what you last paid.** Every download files the prices away, and
+  a later count offers them back, marked **last** so a remembered price is never
+  mistaken for one you checked. Typing over it clears the mark. The newest price
+  wins outright rather than being averaged with older ones, so the figure on
+  screen is one you actually paid on a real day and not a blend that matches no
+  invoice. A price already in the uploaded file is never overwritten — the file is
+  this order, the memory is only the last one.
+- **`Anorak #2` and `Anorak 2` are the same item** as far as the memory goes, so
+  a price does not go missing over a hash.
+- Counts and typed-in costs are **saved as you go** and appear on the Saved Data
+  page.
+
 ## 2. Order Editor (`/edit`)
 
 Upload a sheet, edit it as bags sell, then download the updated PDF. Use this to
@@ -373,7 +399,9 @@ warehouse.
 ## 8. Counter (`/counter`)
 
 Counting the bags in a warehouse. Upload the buyer list to get the items, name the
-container, then search and tally each item up from zero.
+container, then search and tally each item up from zero. Two files come out: a
+**spreadsheet** to file the count, and a **PDF for pricing** to feed straight back
+into the [Price List](#1-price-list-).
 
 - **Type, then press Enter.** The search box stays focused and Enter adds one to the
   best match, so counting is three letters and a keypress rather than hunting
@@ -394,13 +422,26 @@ container, then search and tally each item up from zero.
   *doesn't match* to finish off.
 - **Saved as you go.** A count takes hours, so every tap is written down and it
   appears in backups and on the Saved Data page.
-- **Download the count** — `<Order> - <Container> - Bag Count.xlsx`. Just two
+- **Download the spreadsheet** — `<Order> - <Container> - Bag Count.xlsx`. Just two
   columns, **Item and Count**, with a live total. What the list expected and whether
   it matches stay on the page: this sheet is the tally itself, and printing the
   expected quantities onto it would hand them to whoever did the counting. An item
   nobody reached is listed with an **empty** cell rather than a zero, and the total
   leaves it out. **There are no prices on the sheet** either — the list it came from
   had a per-bag price beside every quantity, and none of it crosses over.
+- **Download a PDF for pricing** — `<Order> - <Container> - Bag Count.pdf`. Same
+  two facts, item and count, in a form the [Price List](#1-price-list-) can read
+  back: upload it there and the counts arrive with an empty **Cost / bag** column
+  waiting for what you paid. That closes the loop — the floor produces the
+  quantities, the office puts prices against them — without anyone retyping a
+  count. The button stays disabled until something has actually been counted,
+  since a PDF of nothing is only a way of losing an afternoon.
+- **An item nobody reached is left off the PDF** and the count of them is stated
+  underneath instead. A zero would claim a count that was never taken.
+- The PDF **ends with a total line**, and that is load-bearing rather than
+  decorative: without it, an item named `Anorak #2` counted 9 times prints as
+  `Anorak #2 9` and reads back as `Anorak #` counted 29. The total tells the
+  parser where the count ends and the name stops.
 
 ---
 
@@ -416,6 +457,10 @@ delete. Back up, choose, delete — in that order down the page.
   mistaken for an empty one, and data that will not parse is reported as
   unreadable rather than as absent. Tick only the sections you want, or select
   all. Each row links to the page it belongs to.
+- **A half-finished job is its own section.** *Price list in progress* holds the
+  counts and costs you have typed so far, and *Remembered prices* holds what you
+  last paid per item. They clear separately, so throwing away one order's
+  working does not throw away the prices you would want back on the next one.
 - **Restore from a backup**, so the backup is worth taking. The file has to be one
   of ours or it is refused, and every key in it is checked against this app's own
   prefixes before being written — a hand-edited file cannot reach data belonging
@@ -485,7 +530,13 @@ npx tsx scripts/verify-shipment.ts      # order number + container: names, files
 npx tsx scripts/verify-dues.ts          # balances to be paid: position, workbook, import
 npx tsx scripts/verify-calculation.ts   # markup per item, and that it never leaves the page
 npx tsx scripts/verify-counter.ts       # warehouse count: tallies, two-column sheet
+npx tsx scripts/verify-count-to-price.ts # count PDF -> price list round trip, cost gate
 ```
+
+1,536 checks. The count-to-price suite renders a real count PDF, parses it back
+with the same code the upload path uses, and fails if a single item name or count
+comes out different — the two files are a contract, so the round trip is tested
+rather than assumed.
 
 ---
 
@@ -514,6 +565,13 @@ npx tsx scripts/verify-counter.ts       # warehouse count: tallies, two-column s
 | Edited sheet download endpoint | `src/app/api/export/route.ts` |
 | Price List UI | `src/app/page.tsx` |
 | Order Editor UI | `src/app/edit/page.tsx` |
+| Warehouse count model | `src/lib/counter.ts` |
+| Count PDF (read back by `parseOrder.ts`) | `src/lib/counterPdf.tsx` |
+| Count spreadsheet | `src/lib/counterXlsx.ts` |
+| Count download endpoint | `src/app/api/count-export/route.ts` |
+| Counter UI | `src/app/counter/page.tsx` |
+| Costs, totals + the download gate | `src/lib/priceList.ts` |
+| What you last paid per item | `src/lib/priceBook.ts` |
 
 Sample supplier orders used for testing are in `sample-orders/`.
 

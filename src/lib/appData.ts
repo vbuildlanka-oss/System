@@ -123,6 +123,32 @@ export const DATA_SECTIONS: DataSection[] = [
     timestampField: "updatedAt",
   },
   {
+    id: "priceList",
+    label: "Price list in progress",
+    page: "/",
+    key: "balebook.priceList.v1",
+    legacyKeys: [],
+    describe: (p) => plural(countOf(p, "rows"), "item priced", "items priced"),
+    timestampField: "updatedAt",
+  },
+  {
+    id: "priceBook",
+    label: "Remembered prices",
+    page: "/",
+    key: "balebook.priceBook.v1",
+    legacyKeys: [],
+    describe: (p) => {
+      const prices =
+        p && typeof p === "object"
+          ? (p as { prices?: unknown }).prices
+          : undefined;
+      const n =
+        prices && typeof prices === "object" ? Object.keys(prices).length : 0;
+      return plural(n, "item remembered", "items remembered");
+    },
+    timestampField: "updatedAt",
+  },
+  {
     id: "bagCount",
     label: "Warehouse count",
     page: "/counter",

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   UploadCloud,
   FileText,
@@ -9,6 +9,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   RefreshCw,
+  Trash2,
   X,
 } from "lucide-react";
 import type { ParsedOrder } from "@/lib/types";
@@ -20,6 +21,32 @@ import {
 } from "@/lib/types";
 import { shipmentFromFilename } from "@/lib/shipment";
 import {
+  emptyPriceListDoc,
+  fillFromBook,
+  fromParsedItems,
+  isPriceListReady,
+  loadPriceListDoc,
+  missingCostNames,
+  priceListTotals,
+  removeRow,
+  savePriceListDoc,
+  sellingPerBag,
+  setMarkup as setDocMarkup,
+  setOrderNumber as setDocOrderNumber,
+  setRowCost,
+  toOrderItems,
+  DEFAULT_MARKUP,
+  type PriceListDoc,
+} from "@/lib/priceList";
+import {
+  emptyPriceBook,
+  loadPriceBook,
+  priceBookSize,
+  rememberPrices,
+  savePriceBook,
+  type PriceBook,
+} from "@/lib/priceBook";
+import {
   EMPTY_BUYER,
   hasBuyerInfo,
   nextRefNo,
@@ -30,17 +57,19 @@ import {
 import BuyerFields from "@/components/BuyerFields";
 import { cn } from "@/lib/cn";
 
-const DEFAULT_MARKUP = 2000;
-
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
+  /** What the uploaded file said, kept for its totals check. */
   const [parsed, setParsed] = useState<ParsedOrder | null>(null);
-  const [markup, setMarkup] = useState<number>(DEFAULT_MARKUP);
   /**
-   * The order number. Headlines the buyer's document and names the file, so it
-   * is editable rather than whatever happened to be typed inside the sheet.
+   * The sheet being put together: the rows, their costs, the markup and the order
+   * number. Held here rather than read off `parsed` because a count arrives with no
+   * costs and they have to be typed in, then survive a refresh.
    */
-  const [orderNumber, setOrderNumber] = useState("");
+  const [doc, setDoc] = useState<PriceListDoc | null>(null);
+  const [book, setBook] = useState<PriceBook>(() => emptyPriceBook());
+  /** The markup field's text, so it can be emptied while typing. */
+  const [markupInput, setMarkupInput] = useState(String(DEFAULT_MARKUP));
   const [buyer, setBuyer] = useState<Buyer>(EMPTY_BUYER);
   const [refNo, setRefNo] = useState("");
   // The reference this sheet was generated with, so its own number never
@@ -50,22 +79,51 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Pick up an unfinished sheet, and what we last paid for things.
+  useEffect(() => {
+    const saved = loadPriceListDoc();
+    setBook(loadPriceBook());
+    if (saved.rows.length > 0) {
+      setDoc(saved);
+      setMarkupInput(String(saved.markup));
+    }
+  }, []);
+
+  const persist = useCallback((next: PriceListDoc) => {
+    setDoc(next);
+    savePriceListDoc(next);
+  }, []);
+
+  const orderNumber = doc?.orderNumber ?? "";
+  const markup = doc?.markup ?? DEFAULT_MARKUP;
+  const totals = useMemo(
+    () => priceListTotals(doc ?? emptyPriceListDoc()),
+    [doc],
+  );
+  const ready = doc !== null && isPriceListReady(doc);
+
   const priceList = useMemo(() => {
-    if (!parsed) return null;
+    if (!doc || doc.rows.length === 0) return null;
     return buildBuyerPriceList(
-      { title: orderNumber.trim() || parsed.title, items: parsed.items },
-      Number.isFinite(markup) ? markup : 0,
+      { title: doc.orderNumber.trim() || parsed?.title || "Order", items: toOrderItems(doc) },
+      markup,
     );
-  }, [parsed, orderNumber, markup]);
+  }, [doc, parsed, markup]);
 
   const handleFile = useCallback(async (f: File) => {
     setError(null);
+    setNotice(null);
     setParsed(null);
     setFile(f);
     setLoading(true);
+    // Read fresh rather than trusting state, so a price saved a moment ago on
+    // another tab is still offered.
+    const currentBook = loadPriceBook();
+    setBook(currentBook);
     try {
       const fd = new FormData();
       fd.append("file", f);
@@ -76,14 +134,37 @@ export default function Home() {
       }
       const loaded = data as ParsedOrder;
       setParsed(loaded);
+
       // Prefer the order number in the file name over the heading inside the
       // sheet, since that is what the file was tracked by. Read through
       // shipmentFromFilename, which takes a container ID out of the name first:
       // its digits would otherwise be read as the order number, and a container
       // has no business on a buyer's document.
-      setOrderNumber(
-        shipmentFromFilename(f.name).orderNumber || loaded.title,
-      );
+      const fresh = fromParsedItems(loaded.items, {
+        orderNumber: shipmentFromFilename(f.name).orderNumber || loaded.title,
+        markup: Number.isFinite(markup) ? markup : DEFAULT_MARKUP,
+        // A count has no prices, so whatever we last paid is offered.
+        book: currentBook,
+      });
+      if (fresh.rows.length === 0) {
+        throw new Error("No items with bag counts were found in that file.");
+      }
+      persist(fresh);
+      setMarkupInput(String(fresh.markup));
+
+      const stats = priceListTotals(fresh);
+      if (stats.missing > 0) {
+        setNotice(
+          `Read ${stats.items} items (${stats.bags} bags). This file had no prices on it, so ${stats.missing} of them still need one${stats.remembered > 0 ? `, and ${stats.remembered} were filled in from what you last paid` : ""}.`,
+        );
+      } else {
+        setNotice(
+          stats.remembered > 0
+            ? `Read ${stats.items} items (${stats.bags} bags), with ${stats.remembered} priced from what you last paid.`
+            : null,
+        );
+      }
+
       // Each newly loaded sheet gets its own document reference.
       const ref = nextRefNo();
       setRefNo(ref);
@@ -94,7 +175,7 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [markup, persist]);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
@@ -107,8 +188,17 @@ export default function Home() {
   );
 
   const download = useCallback(async () => {
-    if (!parsed) return;
-    const title = orderNumber.trim() || parsed.title;
+    if (!doc) return;
+    // A missing cost is not a cost of zero. Sending this now would quote the buyer
+    // the markup alone, which is why it is refused rather than warned about.
+    if (!isPriceListReady(doc)) {
+      const waiting = missingCostNames(doc);
+      setError(
+        `${waiting.length} item${waiting.length === 1 ? "" : "s"} still need a price: ${waiting.slice(0, 4).join(", ")}${waiting.length > 4 ? `, and ${waiting.length - 4} more` : ""}.`,
+      );
+      return;
+    }
+    const title = doc.orderNumber.trim() || parsed?.title || "Order";
     setDownloading(true);
     setError(null);
     try {
@@ -118,7 +208,7 @@ export default function Home() {
         body: JSON.stringify({
           title: title,
           markup: Number.isFinite(markup) ? markup : 0,
-          items: parsed.items,
+          items: toOrderItems(doc),
           buyer,
           refNo,
         }),
@@ -142,19 +232,33 @@ export default function Home() {
       if (hasBuyerInfo(buyer)) rememberBuyer(buyer);
       recordRef(refNo);
       setBuyerRefreshKey((k) => k + 1);
+
+      // And remember what these bags cost, so the next count fills itself in.
+      const learned = rememberPrices(
+        loadPriceBook(),
+        doc.rows.map((row) => ({ name: row.name, costPerBag: row.costPerBag })),
+      );
+      savePriceBook(learned);
+      setBook(learned);
+      setNotice(
+        `Downloaded. ${doc.rows.length} price${doc.rows.length === 1 ? "" : "s"} remembered for next time.`,
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : "Download failed.");
     } finally {
       setDownloading(false);
     }
-  }, [parsed, orderNumber, markup, buyer, refNo]);
+  }, [doc, parsed, markup, buyer, refNo]);
 
   const reset = useCallback(() => {
     setFile(null);
     setParsed(null);
     setError(null);
-    setMarkup(DEFAULT_MARKUP);
-    setOrderNumber("");
+    setNotice(null);
+    const fresh = emptyPriceListDoc();
+    setDoc(null);
+    savePriceListDoc(fresh);
+    setMarkupInput(String(DEFAULT_MARKUP));
     setBuyer(EMPTY_BUYER);
     setRefNo("");
     setGeneratedRef("");
@@ -170,7 +274,9 @@ export default function Home() {
         </h1>
         <p className="mt-2 max-w-2xl text-sm text-gray-500">
           Upload an order sheet, set the markup, and download the buyer&apos;s
-          copy.
+          copy. A warehouse count from the Counter works too: it comes with no
+          prices, so put in what you paid for each item and the markup goes on
+          as usual.
         </p>
       </header>
 
@@ -244,8 +350,22 @@ export default function Home() {
         </div>
       )}
 
+      {notice && !error && (
+        <div className="mb-6 flex animate-fade-in items-start gap-3 rounded-xl border border-brand-200 bg-brand-50 px-4 py-3 text-sm text-brand-800">
+          <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0" />
+          <span className="flex-1">{notice}</span>
+          <button
+            onClick={() => setNotice(null)}
+            className="rounded-md p-0.5 hover:bg-brand-100"
+            aria-label="Dismiss"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       {/* Results */}
-      {parsed && priceList && (
+      {doc && priceList && (
         <div className="animate-fade-in space-y-6">
           {/* File + controls card */}
           <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
@@ -256,10 +376,16 @@ export default function Home() {
                 </div>
                 <div className="min-w-0">
                   <p className="truncate font-semibold text-gray-900">
-                    {file?.name ?? parsed.title}
+                    {file?.name ?? doc.orderNumber ?? "Saved sheet"}
                   </p>
                   <p className="text-sm text-gray-500">
-                    {parsed.items.length} items · {parsed.totalQty} bags
+                    {totals.items} items &middot; {totals.bags} bags
+                    {totals.missing > 0 && (
+                      <span className="text-amber-700">
+                        {" "}
+                        &middot; {totals.missing} without a price
+                      </span>
+                    )}
                   </p>
                 </div>
               </div>
@@ -284,8 +410,10 @@ export default function Home() {
                 id="order-number"
                 type="text"
                 value={orderNumber}
-                onChange={(e) => setOrderNumber(e.target.value)}
-                placeholder={parsed.title || "Sri Lanka 01"}
+                onChange={(e) =>
+                  doc && persist(setDocOrderNumber(doc, e.target.value))
+                }
+                placeholder={parsed?.title || "Sri Lanka 01"}
                 maxLength={LIMITS.title}
                 className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm transition focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 sm:max-w-md"
               />
@@ -293,13 +421,13 @@ export default function Home() {
                 Taken from the file name, and used as the heading on the
                 buyer&apos;s copy. Downloads as{" "}
                 <span className="font-medium text-gray-600">
-                  {buyerPriceFilename(orderNumber.trim() || parsed.title)}
+                  {buyerPriceFilename(orderNumber.trim() || parsed?.title || "Order")}
                 </span>
               </p>
             </div>
 
-            {/* Validation notice */}
-            {parsed.totalsMatch ? (
+            {/* Validation notice, for a file that came with its own prices */}
+            {parsed === null || totals.missing > 0 ? null : parsed.totalsMatch ? (
               <div className="mt-4 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
                 <CheckCircle2 className="h-4 w-4" />
                 Totals match the source sheet.
@@ -315,6 +443,35 @@ export default function Home() {
                     : "not found"}
                   ). Please review the rows below before sending to a buyer.
                 </span>
+              </div>
+            )}
+
+            {/* Nothing to sell until every bag has a cost */}
+            {totals.missing > 0 && (
+              <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
+                <p className="flex items-start gap-2 font-medium">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  {totals.missing} of {totals.items} items still need the price
+                  you paid.
+                </p>
+                <p className="mt-1 pl-6 text-xs text-amber-800">
+                  This file carried counts but no prices. Fill in the{" "}
+                  <span className="font-semibold">Cost / bag</span> column below.
+                  The buyer&apos;s copy cannot be downloaded until they are all
+                  in, because a bag left at zero would be quoted at the markup
+                  alone.
+                  {priceBookSize(book) > 0 && (
+                    <>
+                      {" "}
+                      <button
+                        onClick={() => doc && persist(fillFromBook(doc, book))}
+                        className="font-semibold underline"
+                      >
+                        Fill any I have priced before
+                      </button>
+                    </>
+                  )}
+                </p>
               </div>
             )}
 
@@ -335,11 +492,16 @@ export default function Home() {
                   type="number"
                   min={0}
                   step={500}
-                  value={Number.isFinite(markup) ? markup : ""}
+                  value={markupInput}
                   onChange={(e) => {
+                    setMarkupInput(e.target.value);
                     const n = parseFloat(e.target.value);
                     // Never allow a negative markup - it would cut the price.
-                    setMarkup(Number.isFinite(n) ? Math.max(0, n) : NaN);
+                    if (doc) {
+                      persist(
+                        setDocMarkup(doc, Number.isFinite(n) ? Math.max(0, n) : 0),
+                      );
+                    }
                   }}
                   className="w-full rounded-lg border border-gray-300 py-2 pl-9 pr-3 text-sm font-semibold text-gray-900 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
                 />
@@ -363,15 +525,15 @@ export default function Home() {
 
           {/* Summary stats */}
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-            <StatCard label="Total Bags" value={priceList.totalQty.toString()} />
+            <StatCard label="Total Bags" value={totals.bags.toString()} />
             <StatCard
               label="Buyer Grand Total"
-              value={formatLKR(priceList.grandTotal)}
+              value={totals.missing > 0 ? "-" : formatLKR(totals.selling)}
               highlight
             />
             <StatCard
               label="Added by Markup"
-              value={formatLKR(priceList.totalQty * markup)}
+              value={formatLKR(totals.markupTotal)}
             />
           </div>
 
@@ -386,43 +548,101 @@ export default function Home() {
                     </th>
                     <th className="px-4 py-3 text-center font-semibold">Qty</th>
                     <th className="px-4 py-3 text-right font-semibold">
+                      Cost / bag
+                    </th>
+                    <th className="px-4 py-3 text-right font-semibold">
                       Per Bag
                     </th>
                     <th className="px-4 py-3 text-right font-semibold">Total</th>
+                    <th className="px-2 py-3" />
                   </tr>
                 </thead>
                 <tbody>
-                  {priceList.rows.map((r, i) => (
-                    <tr
-                      key={`${r.name}-${i}`}
-                      className={cn(
-                        "border-b border-gray-100 transition-colors hover:bg-brand-50/50",
-                        i % 2 === 1 && "bg-gray-50/60",
-                      )}
-                    >
-                      <td className="px-4 py-2.5 text-gray-800">{r.name}</td>
-                      <td className="px-4 py-2.5 text-center text-gray-600">
-                        {r.qty}
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-medium text-gray-900">
-                        {formatLKR(r.perBag)}
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-medium text-gray-900">
-                        {formatLKR(r.total)}
-                      </td>
-                    </tr>
-                  ))}
+                  {doc.rows.map((row, i) => {
+                    const needsPrice = row.costPerBag <= 0;
+                    return (
+                      <tr
+                        key={row.id}
+                        className={cn(
+                          "border-b border-gray-100 transition-colors hover:bg-brand-50/50",
+                          i % 2 === 1 && "bg-gray-50/60",
+                          needsPrice && "bg-amber-50/70 hover:bg-amber-50",
+                        )}
+                      >
+                        <td className="px-4 py-2.5 text-gray-800">{row.name}</td>
+                        <td className="px-4 py-2.5 text-center text-gray-600">
+                          {row.qty}
+                        </td>
+                        <td className="px-4 py-1.5 text-right">
+                          <input
+                            type="number"
+                            min={0}
+                            step={500}
+                            value={row.costPerBag === 0 ? "" : row.costPerBag}
+                            placeholder="0"
+                            aria-label={`What a bag of ${row.name} cost`}
+                            onChange={(e) =>
+                              persist(
+                                setRowCost(doc, row.id, Number(e.target.value)),
+                              )
+                            }
+                            className={cn(
+                              "w-28 rounded-md border px-2 py-1 text-right tabular-nums outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100",
+                              needsPrice
+                                ? "border-amber-400 bg-white"
+                                : row.remembered
+                                  ? "border-blue-200 bg-blue-50/60 text-blue-900"
+                                  : "border-transparent bg-transparent text-gray-700 hover:border-gray-200",
+                            )}
+                          />
+                          {row.remembered && (
+                            <span
+                              title="What you last paid for this item"
+                              className="ml-1 text-[10px] font-medium uppercase text-blue-500"
+                            >
+                              last
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 text-right font-medium text-gray-900">
+                          {needsPrice ? (
+                            <span className="text-amber-700">&mdash;</span>
+                          ) : (
+                            formatLKR(sellingPerBag(row, markup))
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 text-right font-medium text-gray-900">
+                          {needsPrice ? (
+                            <span className="text-amber-700">&mdash;</span>
+                          ) : (
+                            formatLKR(row.qty * sellingPerBag(row, markup))
+                          )}
+                        </td>
+                        <td className="px-2 py-2.5 text-right">
+                          <button
+                            onClick={() => persist(removeRow(doc, row.id))}
+                            title="Take this item off the list"
+                            className="rounded-md p-1 text-gray-300 transition hover:bg-red-50 hover:text-red-600"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
                 <tfoot className="sticky bottom-0 bg-brand-100 font-bold text-gray-900">
                   <tr>
                     <td className="px-4 py-3">Total</td>
-                    <td className="px-4 py-3 text-center">
-                      {priceList.totalQty}
+                    <td className="px-4 py-3 text-center">{totals.bags}</td>
+                    <td className="px-4 py-3 text-right">
+                      {formatLKR(totals.cost)}
                     </td>
                     <td className="px-4 py-3" />
                     <td className="px-4 py-3 text-right">
-                      {formatLKR(priceList.grandTotal)}
+                      {totals.missing > 0 ? "\u2014" : formatLKR(totals.selling)}
                     </td>
+                    <td className="px-2 py-3" />
                   </tr>
                 </tfoot>
               </table>
@@ -430,10 +650,21 @@ export default function Home() {
           </div>
 
           {/* Download */}
-          <div className="flex justify-end">
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            {!ready && (
+              <p className="text-xs font-medium text-amber-700">
+                {totals.missing} item{totals.missing === 1 ? "" : "s"} still need a
+                price
+              </p>
+            )}
             <button
               onClick={download}
-              disabled={downloading}
+              disabled={downloading || !ready}
+              title={
+                ready
+                  ? undefined
+                  : "Every item needs the price you paid before this can be sent to a buyer"
+              }
               className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-brand-600/25 transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {downloading ? (
