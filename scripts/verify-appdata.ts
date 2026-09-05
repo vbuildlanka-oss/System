@@ -95,6 +95,28 @@ const CALC = JSON.stringify({
     { name: "Blanket", qty: 12, costPerBag: 15000, markup: 3000 },
   ],
 });
+const PAYROLL = JSON.stringify({
+  employer: "Vbuild Lanka",
+  rates: { epfEmployee: 8, epfEmployer: 12, etf: 3 },
+  fields: [{ id: "pf1", label: "PAYE", kind: "deduction" }],
+  months: [
+    {
+      id: "pm1",
+      month: "2026-07",
+      paidOn: "2026-07-31",
+      rows: [{ id: "pr1", name: "Nimal Perera", tin: "123456789", gross: 100000 }],
+    },
+    {
+      id: "pm2",
+      month: "2026-08",
+      paidOn: "",
+      rows: [
+        { id: "pr2", name: "Nimal Perera", tin: "123456789", gross: 100000 },
+        { id: "pr3", name: "Kamala Silva", tin: "987654321", gross: 60000 },
+      ],
+    },
+  ],
+});
 
 function populated(): FakeStore {
   return new FakeStore({
@@ -108,6 +130,7 @@ function populated(): FakeStore {
     "balebook.bagCount.v1": COUNT,
     "balebook.priceList.v1": PRICELIST,
     "balebook.priceBook.v1": PRICEBOOK,
+    "balebook.payroll.v1": PAYROLL,
     "balebook.deviceId.v1": "3F7K",
     "balebook.refCounter.v1": JSON.stringify({ date: "260814", n: 7 }),
     "balebook.usedRefs.v1": JSON.stringify(["BB-3F7K-260814-001", "BB-3F7K-260814-002"]),
@@ -124,7 +147,7 @@ section("Listing what is stored");
   const store = populated();
   const report = inspectStoredData(store);
 
-  check(report.sections.length === 10, `every section is listed (${report.sections.length})`);
+  check(report.sections.length === 11, `every section is listed (${report.sections.length})`);
   check(!report.empty, "and the store is not reported as empty");
 
   const by = (id: string) => report.sections.find((s) => s.id === id);
@@ -244,10 +267,14 @@ section("Clearing everything");
     "the half-finished price list goes too",
   );
   check(
+    store.getItem("balebook.payroll.v1") === null,
+    "the payroll is emptied",
+  );
+  check(
     store.getItem("balebook.priceBook.v1") === null,
     "and so do the remembered prices",
   );
-  check(result.sections.length === 10, `all ten sections are reported cleared (${result.sections.length})`);
+  check(result.sections.length === 11, `all eleven sections are reported cleared (${result.sections.length})`);
 
   // The whole point of clearing: what the pages load afterwards is nothing.
   const after = inspectStoredData(store);
@@ -385,7 +412,7 @@ section("Backing up before clearing");
   check(!Number.isNaN(Date.parse(backup.savedAt)), `and when it was taken (${backup.savedAt})`);
 
   const keys = Object.keys(backup.data);
-  check(keys.length === 13, `every key of ours is captured (${keys.length})`);
+  check(keys.length === 14, `every key of ours is captured (${keys.length})`);
   check(
     backup.data["balebook.balanceSheet.v1"] === BALANCE,
     "with the data exactly as stored, byte for byte",
@@ -437,7 +464,7 @@ section("Restoring a backup");
   const result = restoreStoredData(backup, target);
 
   check(result.problem === undefined, `a real backup restores (${result.problem ?? "no problem"})`);
-  check(result.restored.length === 13, `every key comes back (${result.restored.length})`);
+  check(result.restored.length === 14, `every key comes back (${result.restored.length})`);
   check(
     target.getItem("balebook.balanceSheet.v1") === BALANCE,
     "with the data byte for byte",
@@ -599,7 +626,7 @@ section("When there is no store");
   // Server rendering, or a browser with storage switched off.
   const report = inspectStoredData(null);
   check(report.empty, "listing reports an empty store rather than throwing");
-  check(report.sections.length === 10, "and still names every section");
+  check(report.sections.length === 11, "and still names every section");
 
   const result = clearStoredData({ store: null });
   check(result.removed.length === 0, "clearing does nothing rather than throwing");
@@ -635,7 +662,7 @@ section("When the store misbehaves");
   let threw = false;
   try {
     const report = inspectStoredData(hostile);
-    check(report.sections.length === 10, "listing survives a store that throws");
+    check(report.sections.length === 11, "listing survives a store that throws");
   } catch {
     threw = true;
   }

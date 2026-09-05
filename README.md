@@ -1,11 +1,35 @@
 # BaleBook
 
-Order sheets, bag manifests, sales and stockpile tracking for a clothing import
+Order sheets, bag manifests, sales, stockpile and payroll for a clothing import
 business. Everything runs on files, so there is no database to maintain.
 
 There is no login: the app is single-user and all state lives in the browser.
 
 Built with Next.js, TypeScript and Tailwind CSS.
+
+---
+
+## Getting around
+
+Nine pages in one flat row had stopped being a menu and become a wall: on a laptop
+the labels ran out of room, and on a phone it was nine unlabelled icons in a line,
+which is a guessing game. The pages are grouped by what the business actually
+does, and each group opens on click:
+
+| Group | Pages |
+|---|---|
+| **Pricing** | Price List, Calculation, Order Editor |
+| **Warehouse** | Counter, Stockpile, Bag Manifests, Requests |
+| **Accounts** | Balance Sheet, Payroll |
+
+**Saved data** stays on its own, in red, at the end.
+
+Groups open on click rather than on hover, because half of this is used on a phone
+where there is no hover — a menu that needs a mouse is a menu that does not work in
+the warehouse. On a phone the groups collapse into one panel with every page listed
+under its heading, and the page you are on is named next to the logo. Nothing is
+only reachable through a group, and the suite fails if a page exists that the menu
+cannot reach.
 
 ---
 
@@ -454,7 +478,101 @@ into the [Price List](#1-price-list-).
 
 ---
 
-## 9. Saved Data (`/data`)
+## 9. Payroll (`/payroll`)
+
+One wage sheet a month. Type the gross salary and anything withheld; EPF, ETF and
+the net figure are worked out. Download the month as a spreadsheet, or a payslip
+for one person.
+
+### The rule the whole page is built around
+
+In Sri Lanka **EPF is 8% from the employee and 12% from the employer, and ETF is
+3% from the employer only — it may not be deducted from wages at all**
+([CBSL](https://www.cbsl.gov.lk/), [hiring guide](https://www.teamed.global/country-hiring-guides/sri-lanka)).
+So:
+
+```
+Net salary = Gross + allowances − employee EPF − other deductions
+```
+
+**ETF is not in that line, and neither is the employer's EPF.** Several salary
+calculators online say "net salary after EPF and ETF deductions"; following them
+would underpay every employee by 3% of gross every month, and unlawfully. The
+arithmetic here is arranged so the mistake is not expressible — `net` is built from
+the employee's own deductions and nothing else — and the layouts reinforce it:
+
+- On screen, the two company contributions are **greyed and sit past the Net
+  Salary column**, under a line saying they are not deducted from anybody's pay.
+- In the spreadsheet they are **columns to the right of Net Salary**, after the
+  total, so no plausible reading of the sheet subtracts them.
+- On the payslip they are in a separate block **below the net figure**, headed
+  *"Paid by the company on your behalf"*, with a sentence saying they are not
+  deducted and that the employee's own 8% is the one shown under deductions.
+
+The suite proves it rather than trusting it: tripling the ETF rate must leave every
+net wage and every deduction total **unchanged** and only move the cost to the
+company, while raising the employee's own EPF must move the wage.
+
+### Working a month
+
+- **A month is opened, not created.** Names, TINs and gross pay come forward from
+  the month before, because those are the same in March as they were in February.
+  Deductions, advances and any figure typed in for one month do **not** — those are
+  findings about a particular month, and carrying them would put February's advance
+  into March's payslip where nobody would notice. Open a month you missed and it
+  copies from the month *before it*, not from the latest one.
+- **The seven fields you asked for**, plus what the arithmetic needs to be honest:
+  Name, TIN, Gross Salary, EPF, ETF, Other Deductions, Net Salary — with EPF split
+  into the employee's and the employer's, since they are different money.
+- **Add your own columns.** PAYE, a transport allowance, a salary advance: each is
+  either money **paid** or money **withheld**, which is all the arithmetic needs to
+  know. A column becomes a column on every month and a line on every payslip, and
+  a column nobody used is left off the payslip rather than printed as `0.00`.
+  Renaming one is safe; deleting one takes its figures with it, so a deduction that
+  is no longer shown anywhere cannot sit in the file waiting to reappear.
+- **Rates are editable** but default to the statutory 8 / 12 / 3. A rate over 100%
+  is clamped and nonsense becomes zero rather than `NaN`.
+- **A contribution can be typed over** for somebody on probation, a mid-month
+  joiner or a no-pay stretch. It is marked as typed in — on screen, and in italics
+  with a cell note in the spreadsheet — and clearing it goes back to the rate. This
+  matters because a payroll that cannot express an exception gets fixed in Excel
+  afterwards, at which point the sheet and the app disagree.
+- **A negative wage is a hard stop.** If deductions exceed pay the row goes amber
+  and no payslip will be produced, because a payslip is a promise to pay and one
+  with a minus sign on it is not a document to hand anybody. The spreadsheet still
+  exports, since that is where you find the mistake.
+- Every figure is **saved as you go** and appears on the Saved Data page.
+
+### What comes out
+
+- **This month** — `<Employer> - Payroll - August 2026.xlsx`. Every derived figure
+  is a live formula, so editing a salary recalculates the EPF, the deductions, the
+  net and the company's cost. Rates live on their own **Rates** tab that every month
+  reads, so a rate that changes is changed once. A **To pay** block underneath works
+  out the three payments — wages to staff, EPF to remit (both halves as one
+  payment), ETF to remit — from the total row rather than restating them, so it
+  cannot disagree with the sheet above it.
+- **All of 2026** — every month on its own tab plus a summary that **points at each
+  month's total row** rather than copying figures, so a month corrected in March
+  shows up in the year total without anybody remembering to redo it. This is the
+  sheet the annual EPF and ETF returns get filled in from. Headcount is the
+  *largest* month, not a sum, because the same person appears in every month they
+  were paid.
+- **A payslip per person** — `Payslip - Nimal Perera - August 2026.pdf`. One person
+  per page and **nothing on it about anybody else**: not another name, not another
+  TIN, not another salary, and not the month's total wage bill. A payslip is handed
+  to the person it belongs to, so any of those would be a disclosure. The suite
+  reads the generated PDF's text back and fails if a colleague's figures appear.
+- **All payslips** — one file, one page each, named `… - office copy.pdf`. Its name
+  says what it is, because this one holds everybody's pay and must not be sent to a
+  person by mistake.
+
+Every formula in both workbooks was checked by recalculating them from the raw
+inputs with an independent engine and comparing against the app's own arithmetic.
+
+---
+
+## 10. Saved Data (`/data`)
 
 Everything this app remembers lives in your browser. **Saved data** in the top
 bar, reachable from every page, shows what is stored and lets you choose what to
@@ -569,9 +687,10 @@ npx tsx scripts/verify-calculation.ts   # markup per item, and that it never lea
 npx tsx scripts/verify-counter.ts       # warehouse count: tallies, two-column sheet
 npx tsx scripts/verify-count-to-price.ts # count PDF -> price list round trip, cost gate
 npx tsx scripts/verify-pdf-read.ts      # why an upload failed, and retrying it
+npx tsx scripts/verify-payroll.ts       # wages, EPF/ETF, payslip privacy, the menu
 ```
 
-1,591 checks. The count-to-price suite renders a real count PDF, parses it back
+1,856 checks. The count-to-price suite renders a real count PDF, parses it back
 with the same code the upload path uses, and fails if a single item name or count
 comes out different — the two files are a contract, so the round trip is tested
 rather than assumed.
@@ -610,6 +729,12 @@ rather than assumed.
 | Counter UI | `src/app/counter/page.tsx` |
 | Costs, totals + the download gate | `src/lib/priceList.ts` |
 | What you last paid per item | `src/lib/priceBook.ts` |
+| Wages, EPF/ETF, months + custom columns | `src/lib/payroll.ts` |
+| Payroll workbooks (month + year) | `src/lib/payrollXlsx.ts` |
+| Payslips | `src/lib/payrollPdf.tsx` |
+| Payroll download endpoint | `src/app/api/payroll-export/route.ts` |
+| Payroll UI | `src/app/payroll/page.tsx` |
+| The grouped menu | `src/components/Nav.tsx` |
 
 Sample supplier orders used for testing are in `sample-orders/`.
 

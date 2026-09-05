@@ -158,6 +158,17 @@ export const DATA_SECTIONS: DataSection[] = [
     timestampField: "updatedAt",
   },
   {
+    id: "payroll",
+    label: "Payroll",
+    page: "/payroll",
+    key: "balebook.payroll.v1",
+    legacyKeys: [],
+    // Months rather than people, because the same person appears in every month
+    // they were paid and "24 people" for two months of twelve would be a lie.
+    describe: (p) => plural(countOf(p, "months"), "month of wages", "months of wages"),
+    timestampField: "updatedAt",
+  },
+  {
     id: "buyers",
     label: "Saved buyers",
     page: "used on every document",
