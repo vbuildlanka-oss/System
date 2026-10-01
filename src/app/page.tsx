@@ -9,10 +9,14 @@ import {
   AlertTriangle,
   CheckCircle2,
   RefreshCw,
+  Search,
   Trash2,
   X,
 } from "lucide-react";
+import { searchList } from "@/lib/search";
+import { moveInColumn } from "@/lib/keyboard";
 import type { ParsedOrder } from "@/lib/types";
+import type { Restore } from "@/lib/restoreTypes";
 import {
   buildBuyerPriceList,
   buyerPriceFilename,
@@ -56,6 +60,8 @@ import {
 } from "@/lib/buyer";
 import BuyerFields from "@/components/BuyerFields";
 import { cn } from "@/lib/cn";
+import UndoToast, { useUndo } from "@/components/UndoToast";
+import { useFind } from "@/lib/useFind";
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
@@ -81,6 +87,11 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [rowSearch, setRowSearch] = useState("");
+  // Arriving from the quick-jump with something to find.
+  useFind(setRowSearch);
+  /** Show only the rows still waiting for a cost, to work through them. */
+  const [onlyMissing, setOnlyMissing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Pick up an unfinished sheet, and what we last paid for things.
@@ -97,6 +108,7 @@ export default function Home() {
     setDoc(next);
     savePriceListDoc(next);
   }, []);
+  const undoer = useUndo<PriceListDoc>(persist);
 
   const orderNumber = doc?.orderNumber ?? "";
   const markup = doc?.markup ?? DEFAULT_MARKUP;
@@ -105,6 +117,12 @@ export default function Home() {
     [doc],
   );
   const ready = doc !== null && isPriceListReady(doc);
+
+  const shownRows = useMemo(() => {
+    if (!doc) return [];
+    const base = onlyMissing ? doc.rows.filter((r) => r.costPerBag <= 0) : doc.rows;
+    return searchList(base, rowSearch, (r) => [r.name]);
+  }, [doc, onlyMissing, rowSearch]);
 
   const priceList = useMemo(() => {
     if (!doc || doc.rows.length === 0) return null;
@@ -127,12 +145,27 @@ export default function Home() {
     try {
       const fd = new FormData();
       fd.append("file", f);
+      fd.append("for", "/");
       const res = await fetch("/api/process", { method: "POST", body: fd });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || "Failed to read the PDF.");
+        throw new Error(data.error || "Failed to read that file.");
       }
-      const loaded = data as ParsedOrder;
+      // A buyer's price list printed by this app carries SELLING prices - the
+      // cost with the markup already on it. Taking those as costs would put the
+      // markup on twice, so only the items and bag counts are kept, and the
+      // costs come from what was last paid. Supplier files never match this.
+      const restore = (data as { restore?: Restore }).restore;
+      const buyerCopy = restore?.kind === "buyer-price-list";
+      const loaded: ParsedOrder = buyerCopy
+        ? {
+            ...(data as ParsedOrder),
+            items: (data as ParsedOrder).items.map((i) => ({ ...i, perBag: 0 })),
+            computedTotal: 0,
+            printedTotal: null,
+            totalsMatch: true,
+          }
+        : (data as ParsedOrder);
       setParsed(loaded);
 
       // Prefer the order number in the file name over the heading inside the
@@ -141,7 +174,10 @@ export default function Home() {
       // its digits would otherwise be read as the order number, and a container
       // has no business on a buyer's document.
       const fresh = fromParsedItems(loaded.items, {
-        orderNumber: shipmentFromFilename(f.name).orderNumber || loaded.title,
+        orderNumber:
+          (restore?.kind === "buyer-price-list" ? restore.orderNumber : "") ||
+          shipmentFromFilename(f.name).orderNumber ||
+          loaded.title,
         markup: Number.isFinite(markup) ? markup : DEFAULT_MARKUP,
         // A count has no prices, so whatever we last paid is offered.
         book: currentBook,
@@ -153,7 +189,17 @@ export default function Home() {
       setMarkupInput(String(fresh.markup));
 
       const stats = priceListTotals(fresh);
-      if (stats.missing > 0) {
+      if (buyerCopy) {
+        setNotice(
+          `That is a buyer's price list from BaleBook, so its prices already include a markup and were not used as costs. Read ${stats.items} items (${stats.bags} bags)` +
+            (stats.remembered > 0
+              ? `; ${stats.remembered} were priced from what you last paid` +
+                (stats.missing > 0 ? `, and ${stats.missing} still need a cost.` : ".")
+              : stats.missing > 0
+                ? `; type in what each bag cost.`
+                : "."),
+        );
+      } else if (stats.missing > 0) {
         setNotice(
           `Read ${stats.items} items (${stats.bags} bags). This file had no prices on it, so ${stats.missing} of them still need one${stats.remembered > 0 ? `, and ${stats.remembered} were filled in from what you last paid` : ""}.`,
         );
@@ -319,7 +365,7 @@ export default function Home() {
           <input
             ref={inputRef}
             type="file"
-            accept="application/pdf,.pdf"
+            accept=".pdf,.csv,.xlsx,application/pdf,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             className="hidden"
             onChange={(e) => {
               const f = e.target.files?.[0];
@@ -340,14 +386,14 @@ export default function Home() {
                 <UploadCloud className="h-8 w-8" />
               </div>
               <p className="mt-5 text-lg font-semibold text-gray-800">
-                Drop your order PDF here
+                Drop your order file here
               </p>
               <p className="mt-1 text-sm text-gray-500">
                 or{" "}
                 <span className="font-medium text-brand-600">
                   click to browse
                 </span>{" "}
-                · PDF up to 15 MB
+                · supplier PDF, CSV or Excel, or a BaleBook count · up to 15 MB
               </p>
             </>
           )}
@@ -468,7 +514,11 @@ export default function Home() {
                     <>
                       {" "}
                       <button
-                        onClick={() => doc && persist(fillFromBook(doc, book))}
+                        onClick={() => {
+                          if (!doc) return;
+                          undoer.remember(doc, "Filled in remembered prices");
+                          persist(fillFromBook(doc, book));
+                        }}
                         className="font-semibold underline"
                       >
                         Fill any I have priced before
@@ -543,6 +593,43 @@ export default function Home() {
 
           {/* Preview table */}
           <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+            <div className="flex flex-wrap items-center gap-2 border-b border-gray-100 px-3 py-2">
+              <div className="relative min-w-[12rem] flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <input
+                  value={rowSearch}
+                  onChange={(e) => setRowSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setRowSearch("");
+                    // Enter jumps into the first matching cost, ready to type.
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      document
+                        .querySelector<HTMLInputElement>('[data-col="cost"]')
+                        ?.focus();
+                    }
+                  }}
+                  placeholder="Find an item, then Enter to type its cost"
+                  className="w-full rounded-lg border border-gray-300 py-1.5 pl-9 pr-3 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                />
+              </div>
+              {totals.missing > 0 && (
+                <button
+                  onClick={() => setOnlyMissing((was) => !was)}
+                  className={cn(
+                    "rounded-lg px-3 py-1.5 text-xs font-semibold transition",
+                    onlyMissing
+                      ? "bg-amber-500 text-white"
+                      : "bg-amber-50 text-amber-800 hover:bg-amber-100",
+                  )}
+                >
+                  {onlyMissing ? "Showing" : "Show"} the {totals.missing} without a cost
+                </button>
+              )}
+              <span className="text-xs text-gray-400">
+                Enter moves to the next cost
+              </span>
+            </div>
             <div className="preview-scroll max-h-[460px] overflow-auto">
               <table className="w-full border-collapse text-sm">
                 <thead className="sticky top-0 z-10 bg-gray-900 text-white">
@@ -562,7 +649,16 @@ export default function Home() {
                   </tr>
                 </thead>
                 <tbody>
-                  {doc.rows.map((row, i) => {
+                  {shownRows.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-6 text-center text-sm text-gray-500">
+                        {onlyMissing && totals.missing === 0
+                          ? "Every item has a cost."
+                          : "Nothing matches that search."}
+                      </td>
+                    </tr>
+                  )}
+                  {shownRows.map((row, i) => {
                     const needsPrice = row.costPerBag <= 0;
                     return (
                       <tr
@@ -585,6 +681,8 @@ export default function Home() {
                             value={row.costPerBag === 0 ? "" : row.costPerBag}
                             placeholder="0"
                             aria-label={`What a bag of ${row.name} cost`}
+                            data-col="cost"
+                            onKeyDown={moveInColumn}
                             onChange={(e) =>
                               persist(
                                 setRowCost(doc, row.id, Number(e.target.value)),
@@ -624,7 +722,10 @@ export default function Home() {
                         </td>
                         <td className="px-2 py-2.5 text-right">
                           <button
-                            onClick={() => persist(removeRow(doc, row.id))}
+                            onClick={() => {
+                              undoer.remember(doc, `${row.name} taken off the list`);
+                              persist(removeRow(doc, row.id));
+                            }}
                             title="Take this item off the list"
                             className="rounded-md p-1 text-gray-300 transition hover:bg-red-50 hover:text-red-600"
                           >
@@ -690,6 +791,7 @@ export default function Home() {
       <footer className="mt-16 text-center text-xs text-gray-400">
         Built by Lathurshan
       </footer>
+      <UndoToast undo={undoer} />
     </main>
   );
 }

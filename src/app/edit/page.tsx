@@ -29,6 +29,7 @@ import {
   CheckCircle2,
   Boxes,
 } from "lucide-react";
+import type { Restore } from "@/lib/restoreTypes";
 import type { EditableRow, ParsedOrder } from "@/lib/types";
 import { computeRowTotal, formatLKR } from "@/lib/types";
 import {
@@ -45,6 +46,8 @@ import { addLots, loadStockpile, saveStockpile } from "@/lib/stockpile";
 import { shipmentFromFilename } from "@/lib/shipment";
 import { readLocal, removeLocal, writeLocal } from "@/lib/storage";
 import { cn } from "@/lib/cn";
+import { useFind } from "@/lib/useFind";
+import { searchList } from "@/lib/search";
 
 /**
  * v3 holds several sheets at once. Earlier versions held a single sheet, and are
@@ -166,6 +169,8 @@ export default function EditPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [search, setSearch] = useState("");
+  // Arriving from the quick-jump with something to find.
+  useFind(setSearch);
   const [hideSoldOut, setHideSoldOut] = useState(false);
   const [restored, setRestored] = useState(false);
 
@@ -387,12 +392,17 @@ export default function EditPage() {
       try {
         const fd = new FormData();
         fd.append("file", file);
+        fd.append("for", "/edit");
         const res = await fetch("/api/process", { method: "POST", body: fd });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Failed to read the file.");
         const parsed = data as ParsedOrder;
+        const restore = (data as { restore?: Restore }).restore;
+        // A sheet this app printed names who it was prepared for and its
+        // reference, and both are worth having back with the rows.
+        const printed = restore?.kind === "sheet" ? restore.buyer : null;
 
-        const ref = nextRefNo();
+        const ref = printed?.refNo || nextRefNo();
         openSheet({
           id: newId(),
           // The number in the file name is what gets tracked. Read it through
@@ -411,7 +421,9 @@ export default function EditPage() {
             totalOverride: null,
           })),
           soldLog: [],
-          buyer: EMPTY_BUYER,
+          buyer: printed
+            ? { name: printed.name, phone: printed.phone.replace(/[^\d+]/g, "") }
+            : EMPTY_BUYER,
           refNo: ref,
         });
         setReceiptBuyerKey("");
@@ -620,12 +632,11 @@ export default function EditPage() {
   }, [saleBuyers, receiptBuyerKey]);
 
   const visibleRows = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return rows.filter((r) => {
-      if (hideSoldOut && r.qty === 0) return false;
-      if (q && !r.name.toLowerCase().includes(q)) return false;
-      return true;
-    });
+    return searchList(
+      rows.filter((r) => !(hideSoldOut && r.qty === 0)),
+      search,
+      (r) => [r.name],
+    );
   }, [rows, search, hideSoldOut]);
 
   /* ------------------------------ exports ------------------------------ */
@@ -849,7 +860,7 @@ export default function EditPage() {
       <input
         ref={pdfInputRef}
         type="file"
-        accept="application/pdf,.pdf"
+        accept=".pdf,.csv,.xlsx,application/pdf,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0];
@@ -933,7 +944,7 @@ export default function EditPage() {
                 <UploadCloud className="h-8 w-8" />
               </div>
               <p className="mt-5 text-lg font-semibold text-gray-800">
-                Drop the order PDF here
+                Drop the order file here - PDF, CSV or Excel
               </p>
               <p className="mt-1 text-sm text-gray-500">
                 or{" "}

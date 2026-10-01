@@ -33,6 +33,55 @@ cannot reach.
 
 ---
 
+## Working fast
+
+Built for a warehouse floor, where hands are full and every tap counts.
+
+- **Quick-jump: press `/` or Ctrl+K anywhere** (or the search icon on a phone).
+  It searches the pages and everything saved on this device at once: how many
+  bags of an item are in stock, whether it has been counted, which buyer is
+  waiting for it, who is on the payroll. Enter goes straight to the right page
+  with the search filled in. It shows no money, and a person found there is a
+  name and a link, never a salary.
+- **Search forgives phone typing.** Every search box uses one matcher: words in
+  any order, the start of a word, a missing `#`, and short forms, so
+  `anorak 2` finds `Anorak #2`, `jeans ladies` finds `3/4 Ladies Jeans` and
+  `blk` finds `Black T-Shirt`. The exact name always ranks first. On the
+  Counter, Enter will not tally a loose abbreviation that fits several items;
+  it shows them to tap instead.
+- **Undo instead of "are you sure?"** Deletes, resets and imports just happen,
+  and a bar at the bottom offers to put it back (Ctrl+Z too, outside text
+  fields). Thirty steps are kept, so a run of wrong taps can be walked back.
+- **Enter moves down a column** when typing costs, markups or salaries, like a
+  spreadsheet. Shift+Enter goes back up.
+- **Every upload takes PDF, CSV or Excel**, and the Stockpile and Payroll pages
+  take a file dropped anywhere on them.
+
+### Every download is a backup
+
+Upload a file BaleBook made on the page that made it, and the page picks up
+where it left off:
+
+| File | Comes back with |
+|---|---|
+| Bag count (xlsx/pdf) | the counts on the open list, uncounted items still uncounted |
+| Bag manifest (xlsx/pdf) | order number and container |
+| Markup calculation | hand-set markups and fast flags |
+| Stockpile CSV | every batch on the day it arrived, so ages stay right |
+| Stockpile PDF | every bag (the PDF has no batch dates, so they are dated as printed) |
+| Buyer requests (csv/pdf) | each buyer as their own list, with what was already supplied |
+| Payroll (month or year) | every month, its columns, and figures typed in by hand; a month already on the page is replaced, not doubled |
+| Balance sheet workbook | expenses, **turnover** and balances, with their dates, after a preview |
+| Updated order sheet | the buyer and reference it was printed for |
+
+A buyer's price list is recognised and its prices are **not** taken as costs,
+since they already include the markup. Supplier files are read exactly as
+before: one of ours is only recognised by the BALEBOOK wordmark or the app's
+own exact headings, and the suite checks the sample supplier PDFs still read
+as 85 items and 733 bags.
+
+---
+
 ## 1. Price List (`/`)
 
 Upload a supplier order PDF, add a per-bag markup (default **Rs 2,000**), preview
@@ -688,9 +737,10 @@ npx tsx scripts/verify-counter.ts       # warehouse count: tallies, two-column s
 npx tsx scripts/verify-count-to-price.ts # count PDF -> price list round trip, cost gate
 npx tsx scripts/verify-pdf-read.ts      # why an upload failed, and retrying it
 npx tsx scripts/verify-payroll.ts       # wages, EPF/ETF, payslip privacy, the menu
+npx tsx scripts/verify-roundtrip.ts     # every export re-imports; search; quick-jump
 ```
 
-1,856 checks. The count-to-price suite renders a real count PDF, parses it back
+2,038 checks. The count-to-price suite renders a real count PDF, parses it back
 with the same code the upload path uses, and fails if a single item name or count
 comes out different — the two files are a contract, so the round trip is tested
 rather than assumed.

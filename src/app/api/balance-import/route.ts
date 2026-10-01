@@ -11,6 +11,11 @@ import {
   type BalanceImport,
 } from "@/lib/balancesImport";
 import type { SkippedRow } from "@/lib/sheetImport";
+import {
+  parseTurnoverGrid,
+  pickTurnoverSheet,
+  type TurnoverImport,
+} from "@/lib/turnoverImport";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,7 +23,7 @@ export const dynamic = "force-dynamic";
 const MAX_BYTES = 15 * 1024 * 1024; // 15 MB
 
 type FileKind = "csv" | "xlsx";
-type Scope = "expenses" | "balances";
+type Scope = "expenses" | "balances" | "turnover" | "all";
 
 function fileKindOf(filename: string): FileKind | null {
   const lower = filename.toLowerCase();
@@ -54,8 +59,13 @@ export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
     const file = form.get("file");
-    const scope: Scope = form.get("scope") === "balances" ? "balances" : "expenses";
-    const noun = scope === "balances" ? "balances" : "expenses";
+    const asked = form.get("scope");
+    const scope: Scope =
+      asked === "balances" || asked === "turnover" || asked === "all"
+        ? asked
+        : "expenses";
+    const noun =
+      scope === "all" ? "entries" : scope === "turnover" ? "turnover" : scope;
 
     if (!file || !(file instanceof File)) {
       return NextResponse.json({ error: "No file uploaded." }, { status: 400 });
@@ -81,8 +91,54 @@ export async function POST(req: NextRequest) {
 
     const buffer = Buffer.from(await file.arrayBuffer());
 
+    // The whole balance sheet workbook in one go: expenses, turnover and
+    // balances from their own tabs. A part the file does not have is simply
+    // empty, so an expenses-only export restores through here as well.
+    if (scope === "all") {
+      if (fileKind !== "xlsx") {
+        return NextResponse.json(
+          { error: "Restoring a whole balance sheet needs the XLSX workbook." },
+          { status: 400 },
+        );
+      }
+      const grids = await xlsxToGrids(buffer);
+      const has = (name: string) => grids.some((g) => g.name.toLowerCase() === name);
+      const expenses = has("expenses") ? pickExpenseSheet(grids) : null;
+      const turnover = has("turnover") ? pickTurnoverSheet(grids) : null;
+      const balances = has("balances") ? pickBalanceSheet(grids) : null;
+      const rowsOf = (r: { rows: unknown[]; problem?: string } | null) =>
+        r && !r.problem ? r.rows : [];
+      const total =
+        rowsOf(expenses).length + rowsOf(turnover).length + rowsOf(balances).length;
+      if (total === 0) {
+        return NextResponse.json(
+          {
+            error:
+              "That workbook has no Expenses, Turnover or Balances tab to restore from. Use the balance sheet workbook downloaded from this page.",
+          },
+          { status: 422 },
+        );
+      }
+      return NextResponse.json({
+        scope,
+        fileName: file.name,
+        sheetName: "",
+        expenses: rowsOf(expenses),
+        turnover: rowsOf(turnover),
+        balances: rowsOf(balances),
+        skipped: [],
+        skippedTotal: 0,
+      });
+    }
+
     let result: Reading;
-    if (scope === "balances") {
+    if (scope === "turnover") {
+      const read: TurnoverImport =
+        fileKind === "xlsx"
+          ? pickTurnoverSheet(await xlsxToGrids(buffer))
+          : parseTurnoverGrid(parseCsv(buffer.toString("utf8")), "CSV");
+      result = { ...read, rows: read.rows, found: {} };
+    } else if (scope === "balances") {
       const read: BalanceImport =
         fileKind === "xlsx"
           ? // Every sheet is offered, so a whole workbook is read from its

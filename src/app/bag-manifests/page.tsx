@@ -35,8 +35,13 @@ import {
   type BagManifestDoc,
 } from "@/lib/bagManifest";
 import { checkContainerNumber } from "@/lib/container";
+import { shipmentFromFilename } from "@/lib/shipment";
+import type { Restore } from "@/lib/restoreTypes";
 import { readLocal } from "@/lib/storage";
 import { cn } from "@/lib/cn";
+import UndoToast, { useUndo } from "@/components/UndoToast";
+import { useFind } from "@/lib/useFind";
+import { searchList } from "@/lib/search";
 
 /** Where the Order Editor keeps its current sheet. */
 const EDITOR_KEY = "balebook.orderEditor.v1";
@@ -52,6 +57,8 @@ export default function BagManifestsPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [search, setSearch] = useState("");
+  // Arriving from the quick-jump with something to find.
+  useFind(setSearch);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -73,6 +80,7 @@ export default function BagManifestsPage() {
     setDoc(next);
     saveManifests(next);
   }, []);
+  const undoer = useUndo<BagManifestDoc>(persist);
 
   const updateManifest = useCallback(
     (id: string, patch: Partial<BagManifest>) => {
@@ -123,14 +131,26 @@ export default function BagManifestsPage() {
       try {
         const fd = new FormData();
         fd.append("file", file);
+        fd.append("for", "/bag-manifests");
         const res = await fetch("/api/process", { method: "POST", body: fd });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Could not read that file.");
         const parsed = data as ParsedOrder;
-        // The number in the file name is what gets tracked, so it wins over the
-        // heading printed inside the file.
-        const fromName = orderNumberFromFilename(file.name);
-        const manifest = createManifest(fromName || parsed.title, parsed.items);
+        const restore = (data as { restore?: Restore }).restore;
+        // A manifest this app exported says its own order and container, which
+        // are exact. Otherwise the number in the file name is what gets tracked,
+        // so it wins over the heading printed inside the file.
+        const fromShipment = shipmentFromFilename(file.name);
+        const orderNumber =
+          (restore?.kind === "manifest" ? restore.orderNumber : "") ||
+          fromShipment.orderNumber ||
+          orderNumberFromFilename(file.name) ||
+          parsed.title;
+        const containerNumber =
+          (restore?.kind === "manifest" ? restore.containerNumber : "") ||
+          (restore?.kind === "count" ? restore.containerId : "") ||
+          fromShipment.containerId;
+        const manifest = createManifest(orderNumber, parsed.items, containerNumber);
         addManifest(manifest);
         setNotice(
           `Loaded "${manifest.orderNumber}" - ${manifest.items.length} items, ${sumQty(manifest.items)} bags. Pricing was dropped.`,
@@ -231,11 +251,12 @@ export default function BagManifestsPage() {
   }, [active, replaceManifest]);
 
   const reset = useCallback(() => {
-    if (!active) return;
+    if (!active || !doc) return;
+    undoer.remember(doc, "Generated figures cleared");
     replaceManifest(clearGenerated(active));
     setTargetDraft("");
     setNotice("Cleared - showing the original quantities.");
-  }, [active, replaceManifest]);
+  }, [active, doc, replaceManifest, undoer]);
 
   const removeManifest = useCallback(() => {
     if (!active || !doc) return;
@@ -297,10 +318,8 @@ export default function BagManifestsPage() {
 
   const visibleItems = useMemo(() => {
     if (!resolved) return [];
-    const q = search.trim().toLowerCase();
     const rows = resolved.items.map((item, i) => ({ item, i }));
-    if (!q) return rows;
-    return rows.filter(({ item }) => item.name.toLowerCase().includes(q));
+    return searchList(rows, search, ({ item }) => [item.name]);
   }, [resolved, search]);
 
   const originalTotal = active ? sumQty(active.items) : 0;
@@ -810,6 +829,7 @@ export default function BagManifestsPage() {
       <footer className="mt-16 text-center text-xs text-gray-400">
         Built by Lathurshan
       </footer>
+      <UndoToast undo={undoer} />
     </main>
   );
 }

@@ -51,6 +51,9 @@ export interface ImportedRow {
   partner: string;
   containerId: string;
   amount: number;
+  /** "YYYY-MM-DD" when the sheet had a date column, so the ledger keeps its order. */
+  at?: string;
+  note?: string;
   /** 1-based row in the source sheet, so the preview can point at it. */
   row: number;
   /** True when an identical expense is already on the balance sheet. */
@@ -92,11 +95,37 @@ interface Columns {
   partner: number;
   container: number;
   amount: number;
+  date: number;
+  note: number;
+}
+
+/** Optional: when it was spent. Kept, so a restored ledger is not all "today". */
+const DATE_HEADINGS = new Set(["date", "day", "spent on", "paid on", "expense date", "entry date"]);
+const NOTE_HEADINGS = new Set(["note", "notes", "remark", "remarks", "comment", "comments", "memo"]);
+
+/** A date cell as "YYYY-MM-DD", or "" when it is not one. */
+export function readDateCell(cell: Cell): string {
+  const text = cellText(cell);
+  const iso = text.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (iso) return Number.isNaN(Date.parse(iso[1])) ? "" : iso[1];
+  const dmy = text.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/);
+  if (dmy) {
+    const value = `${dmy[3]}-${dmy[2].padStart(2, "0")}-${dmy[1].padStart(2, "0")}`;
+    return Number.isNaN(Date.parse(value)) ? "" : value;
+  }
+  return "";
 }
 
 /** Column positions from a candidate heading row, or null if it is not one. */
 function columnsFrom(row: Cell[]): Columns | null {
-  const cols: Columns = { name: -1, partner: -1, container: -1, amount: -1 };
+  const cols: Columns = {
+    name: -1,
+    partner: -1,
+    container: -1,
+    amount: -1,
+    date: -1,
+    note: -1,
+  };
   row.forEach((cell, c) => {
     const text = heading(cell);
     if (text === "") return;
@@ -106,6 +135,8 @@ function columnsFrom(row: Cell[]): Columns | null {
     else if (cols.container === -1 && CONTAINER_HEADINGS.has(text)) cols.container = c;
     else if (cols.partner === -1 && PARTY_HEADINGS.has(text)) cols.partner = c;
     else if (cols.name === -1 && NAME_HEADINGS.has(text)) cols.name = c;
+    else if (cols.date === -1 && DATE_HEADINGS.has(text)) cols.date = c;
+    else if (cols.note === -1 && NOTE_HEADINGS.has(text)) cols.note = c;
   });
   // A heading row has to say what the thing is and what it cost. Without both,
   // it is prose or a summary block.
@@ -232,11 +263,15 @@ export function parseExpenseGrid(
       containerId: isGeneralLabel(containerText) ? "" : containerText,
     });
 
+    const day = readDateCell(at(row, cols.date));
+    const note = cellText(at(row, cols.note));
     out.rows.push({
       name: built.name,
       partner: built.partner,
       containerId: built.containerId,
       amount: built.amount,
+      ...(day !== "" ? { at: day } : {}),
+      ...(note !== "" ? { note } : {}),
       row: rowNumber,
       duplicate: false,
     });
@@ -342,7 +377,10 @@ export function addImportedExpenses(
       partner: row.partner,
       amount: clampNumber(row.amount, LIMITS.money),
       containerId: row.containerId,
-      note,
+      // The sheet's own note wins; otherwise say where the entry came from.
+      note: row.note || note,
+      // Midday, so a time zone either side of UTC keeps the same date.
+      ...(row.at ? { at: `${row.at}T12:00:00.000Z` } : {}),
     }),
   );
 

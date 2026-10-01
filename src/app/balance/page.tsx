@@ -74,8 +74,16 @@ import {
   type ImportedBalance,
 } from "@/lib/balancesImport";
 import { checkContainerNumber } from "@/lib/container";
+import {
+  addImportedTurnover,
+  markTurnoverDuplicates,
+  type ImportedTurnover,
+} from "@/lib/turnoverImport";
+import UndoToast, { useUndo } from "@/components/UndoToast";
 import { formatLKR } from "@/lib/types";
 import { cn } from "@/lib/cn";
+import { useFind } from "@/lib/useFind";
+import { searchList } from "@/lib/search";
 
 /** A spreadsheet that has been read but not yet accepted onto the sheet. */
 interface PendingBase {
@@ -93,6 +101,9 @@ export default function BalancePage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  // Arriving from the quick-jump with something to find.
+  useFind(setSearch);
+  const [balanceSearch, setBalanceSearch] = useState("");
   /** Which export is being built, so only that button shows a spinner. */
   const [building, setBuilding] = useState<
     "full" | "expenses" | "balances" | null
@@ -101,7 +112,15 @@ export default function BalancePage() {
   const importRef = useRef<HTMLInputElement>(null);
   const balanceImportRef = useRef<HTMLInputElement>(null);
   /** Which import is reading, so only that button spins. */
-  const [importing, setImporting] = useState<"expenses" | "balances" | null>(null);
+  const [importing, setImporting] = useState<"expenses" | "balances" | "all" | null>(null);
+  const workbookRef = useRef<HTMLInputElement>(null);
+  /** A whole workbook read and waiting to be accepted. */
+  const [pendingAll, setPendingAll] = useState<{
+    fileName: string;
+    expenses: ImportedRow[];
+    turnover: ImportedTurnover[];
+    balances: ImportedBalance[];
+  } | null>(null);
   /**
    * A read file waiting to be accepted. Nothing is added until it is, so an
    * unexpected file can be looked at and thrown away rather than undone.
@@ -137,6 +156,17 @@ export default function BalancePage() {
     saveBalanceSheet(next);
   }, []);
 
+  // Removing an entry is one tap with no question asked, so it can be undone.
+  const undoer = useUndo<BalanceSheet>(persist);
+  const remember = undoer.remember;
+  const change = useCallback(
+    (next: BalanceSheet, label: string) => {
+      if (sheet) remember(sheet, label);
+      persist(next);
+    },
+    [sheet, persist, remember],
+  );
+
   /* -------------------------------- derived ------------------------------- */
 
   const totals = useMemo(
@@ -166,10 +196,16 @@ export default function BalancePage() {
   /** Soonest due first, and anything undated last: a deadline outranks a note. */
   const sortedBalances = useMemo(() => {
     if (!sheet) return [];
-    return [...sheet.balances].sort(
+    const sorted = [...sheet.balances].sort(
       (a, b) => (a.dueAt || "9999").localeCompare(b.dueAt || "9999"),
     );
-  }, [sheet]);
+    return searchList(sorted, balanceSearch, (b) => [
+      b.party,
+      b.containerId,
+      b.orderNumber,
+      b.note,
+    ]);
+  }, [sheet, balanceSearch]);
   const knownPartners = useMemo(
     () => partnerNames(sheet ?? emptyBalanceSheet()),
     [sheet],
@@ -180,15 +216,12 @@ export default function BalancePage() {
   );
 
   const visibleExpenses = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const list = sheet?.expenses ?? [];
-    if (!q) return list;
-    return list.filter(
-      (e) =>
-        e.name.toLowerCase().includes(q) ||
-        e.partner.toLowerCase().includes(q) ||
-        e.containerId.toLowerCase().includes(q),
-    );
+    return searchList(sheet?.expenses ?? [], search, (e) => [
+      e.name,
+      e.partner,
+      e.containerId,
+      e.note,
+    ]);
   }, [sheet, search]);
 
   /** Container IDs are normalised but not enforced, so this is a nudge only. */
@@ -332,6 +365,7 @@ export default function BalancePage() {
       setError(null);
       try {
         const parsed = parseBalanceSheet(JSON.parse(await file.text()));
+        if (sheet) remember(sheet, "Balance sheet file loaded");
         persist(parsed);
         setNotice(
           `Loaded ${parsed.turnover.length} turnover and ${parsed.expenses.length} expense entries.`,
@@ -342,7 +376,7 @@ export default function BalancePage() {
         if (jsonRef.current) jsonRef.current.value = "";
       }
     },
-    [persist],
+    [sheet, persist, remember],
   );
 
   const exportCsv = useCallback(() => {
@@ -453,6 +487,7 @@ export default function BalancePage() {
         return;
       }
 
+      remember(sheet, `Imported from ${pending.fileName}`);
       persist(result.sheet);
       setPending(null);
       setError(null);
@@ -468,7 +503,70 @@ export default function BalancePage() {
             : ""),
       );
     },
-    [sheet, pending, persist],
+    [sheet, pending, persist, remember],
+  );
+
+  /** Restore a whole balance sheet workbook: expenses, turnover and balances. */
+  const importWorkbook = useCallback(
+    async (file: File) => {
+      if (!sheet) return;
+      setError(null);
+      setNotice(null);
+      setPending(null);
+      setPendingAll(null);
+      setImporting("all");
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("scope", "all");
+        const res = await fetch("/api/balance-import", { method: "POST", body: fd });
+        const data = (await res.json()) as {
+          error?: string;
+          expenses?: ImportedRow[];
+          turnover?: ImportedTurnover[];
+          balances?: ImportedBalance[];
+        };
+        if (!res.ok) throw new Error(data.error || "Could not read that workbook.");
+        setPendingAll({
+          fileName: file.name,
+          expenses: markDuplicates(data.expenses ?? [], sheet.expenses),
+          turnover: markTurnoverDuplicates(data.turnover ?? [], sheet.turnover),
+          balances: markBalanceDuplicates(data.balances ?? [], sheet.balances),
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not read that workbook.");
+      } finally {
+        setImporting(null);
+        if (workbookRef.current) workbookRef.current.value = "";
+      }
+    },
+    [sheet],
+  );
+
+  const commitWorkbook = useCallback(
+    (which: "new" | "all") => {
+      if (!sheet || !pendingAll) return;
+      const pick = <T extends { duplicate: boolean }>(rows: T[]) =>
+        which === "new" ? rows.filter((r) => !r.duplicate) : rows;
+      const ex = pick(pendingAll.expenses);
+      const tv = pick(pendingAll.turnover);
+      const bal = pick(pendingAll.balances);
+      if (ex.length + tv.length + bal.length === 0) {
+        setError("Everything in that workbook is already on the sheet.");
+        return;
+      }
+      let next = addImportedExpenses(sheet, ex, pendingAll.fileName).sheet;
+      next = addImportedTurnover(next, tv, pendingAll.fileName).sheet;
+      next = addImportedBalances(next, bal, pendingAll.fileName).sheet;
+      remember(sheet, `Restored from ${pendingAll.fileName}`);
+      persist(next);
+      setPendingAll(null);
+      setError(null);
+      setNotice(
+        `Restored from ${pendingAll.fileName}: ${ex.length} expense(s), ${tv.length} turnover entr${tv.length === 1 ? "y" : "ies"} and ${bal.length} balance(s).`,
+      );
+    },
+    [sheet, pendingAll, persist, remember],
   );
 
   /**
@@ -573,6 +671,16 @@ export default function BalancePage() {
         }}
       />
       <input
+        ref={workbookRef}
+        type="file"
+        accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) importWorkbook(f);
+        }}
+      />
+      <input
         ref={importRef}
         type="file"
         accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
@@ -602,6 +710,49 @@ export default function BalancePage() {
         <Banner tone="info" onClose={() => setNotice(null)}>
           {notice}
         </Banner>
+      )}
+
+      {pendingAll && (
+        <div className="mb-4 animate-fade-in rounded-xl border border-brand-200 bg-brand-50 px-4 py-3 text-sm text-brand-900">
+          <p className="font-medium">Read {pendingAll.fileName}</p>
+          <ul className="mt-1 space-y-0.5 text-xs text-brand-800">
+            {(
+              [
+                ["expense", "expenses", pendingAll.expenses],
+                ["turnover entry", "turnover entries", pendingAll.turnover],
+                ["balance", "balances", pendingAll.balances],
+              ] as Array<[string, string, Array<{ duplicate: boolean }>]>
+            ).map(([one, many, rows]) => {
+              const repeats = rows.filter((r) => r.duplicate).length;
+              return (
+                <li key={many}>
+                  {rows.length} {rows.length === 1 ? one : many}
+                  {repeats > 0 && ` - ${repeats} already on the sheet`}
+                </li>
+              );
+            })}
+          </ul>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              onClick={() => commitWorkbook("new")}
+              className="rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-700"
+            >
+              Add what is new
+            </button>
+            <button
+              onClick={() => commitWorkbook("all")}
+              className="rounded-lg border border-brand-300 bg-white px-3 py-1.5 text-sm font-semibold text-brand-700 transition hover:bg-brand-50"
+            >
+              Add everything
+            </button>
+            <button
+              onClick={() => setPendingAll(null)}
+              className="rounded-lg px-3 py-1.5 text-sm text-gray-600 transition hover:bg-white"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Summary */}
@@ -846,7 +997,7 @@ export default function BalancePage() {
                     />
                     <button
                       onClick={() =>
-                        sheet && persist(removeTurnover(sheet, entry.id))
+                        sheet && change(removeTurnover(sheet, entry.id), `Turnover for ${entry.containerId} removed`)
                       }
                       title="Remove this entry"
                       className="rounded p-1 text-red-500 transition hover:bg-red-50"
@@ -1109,7 +1260,7 @@ export default function BalancePage() {
                     <td className="px-2 py-2 text-center">
                       <button
                         onClick={() =>
-                          sheet && persist(removeExpense(sheet, expense.id))
+                          sheet && change(removeExpense(sheet, expense.id), `"${expense.name}" removed`)
                         }
                         title="Remove this expense"
                         className="rounded p-1.5 text-red-500 transition hover:bg-red-50"
@@ -1293,7 +1444,27 @@ export default function BalancePage() {
         </div>
 
         {/* The ledger */}
-        {sortedBalances.length === 0 ? (
+        {(sheet?.balances.length ?? 0) > 5 && (
+          <div className="border-b border-gray-100 px-5 py-3">
+            <div className="relative max-w-sm">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+              <input
+                value={balanceSearch}
+                onChange={(e) => setBalanceSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setBalanceSearch("");
+                }}
+                placeholder="Search parties, containers or orders..."
+                className="w-full rounded-lg border border-gray-300 py-1.5 pl-9 pr-3 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+              />
+            </div>
+          </div>
+        )}
+        {sortedBalances.length === 0 && balanceSearch.trim() !== "" ? (
+          <p className="px-5 py-8 text-center text-sm text-gray-500">
+            Nothing matches that search.
+          </p>
+        ) : sortedBalances.length === 0 ? (
           <p className="px-5 py-8 text-center text-sm text-gray-500">
             Nothing outstanding. Add a balance above, or bring previous balances
             in with <span className="font-medium">Import from Excel</span>.
@@ -1445,7 +1616,7 @@ export default function BalancePage() {
                       <td className="px-2 py-2 text-right">
                         <button
                           onClick={() =>
-                            sheet && persist(removeBalanceDue(sheet, balance.id))
+                            sheet && change(removeBalanceDue(sheet, balance.id), `Balance with ${balance.party} removed`)
                           }
                           title="Remove this balance"
                           className="rounded-md p-1 text-gray-400 transition hover:bg-red-50 hover:text-red-600"
@@ -1562,6 +1733,19 @@ export default function BalancePage() {
           Load file
         </button>
         <button
+          onClick={() => workbookRef.current?.click()}
+          disabled={importing !== null}
+          title="Restore expenses, turnover and balances from a balance sheet workbook downloaded from this page"
+          className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-40"
+        >
+          {importing === "all" ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Upload className="h-4 w-4" />
+          )}
+          Restore from workbook
+        </button>
+        <button
           onClick={saveFile}
           disabled={isEmpty}
           className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-40"
@@ -1634,6 +1818,7 @@ export default function BalancePage() {
       <footer className="mt-16 text-center text-xs text-gray-400">
         Built by Lathurshan
       </footer>
+      <UndoToast undo={undoer} />
     </main>
   );
 }

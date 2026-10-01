@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import BuyerFields from "@/components/BuyerFields";
 import { EMPTY_BUYER, rememberBuyer, hasBuyerInfo, type Buyer } from "@/lib/buyer";
+import type { Restore } from "@/lib/restoreTypes";
 import { formatLKR, type ParsedOrder } from "@/lib/types";
 import {
   addSource,
@@ -64,6 +65,9 @@ import {
   type Stockpile,
 } from "@/lib/stockpile";
 import { cn } from "@/lib/cn";
+import UndoToast, { useUndo } from "@/components/UndoToast";
+import { useFind } from "@/lib/useFind";
+import { searchList } from "@/lib/search";
 
 const STATUS_STYLE: Record<LineAvailability, { chip: string; label: string }> = {
   done: { chip: "bg-gray-100 text-gray-600 border-gray-200", label: "Supplied" },
@@ -85,6 +89,8 @@ export default function RequestsPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  // Arriving from the quick-jump with something to find.
+  useFind(setSearch);
   const [importing, setImporting] = useState(false);
   const [addingSource, setAddingSource] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -120,6 +126,8 @@ export default function RequestsPage() {
     setDoc(next);
     saveRequests(next);
   }, []);
+
+  const undoer = useUndo<RequestDoc>(persist);
 
   const save = useCallback(
     (request: BuyerRequest) => {
@@ -275,10 +283,12 @@ export default function RequestsPage() {
 
   const removeLine = useCallback(
     (itemId: string) => {
-      if (!active) return;
+      if (!active || !doc) return;
+      const line = active.items.find((i) => i.id === itemId);
+      undoer.remember(doc, `${line?.name ?? "Line"} removed from ${active.buyer.name || "the list"}`);
       save({ ...active, items: active.items.filter((i) => i.id !== itemId) });
     },
-    [active, save],
+    [active, doc, save, undoer],
   );
 
   /** Edit a line in place, so anything read wrongly from a file can be fixed. */
@@ -325,11 +335,41 @@ export default function RequestsPage() {
       try {
         const fd = new FormData();
         fd.append("file", file);
+        fd.append("for", "/requests");
         const res = await fetch("/api/process", { method: "POST", body: fd });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Could not read that file.");
 
         const parsed = data as ParsedOrder;
+        const restore = (data as { restore?: Restore }).restore;
+
+        // A request list this app exported: each buyer comes back as their own
+        // list, with their phone and everything already supplied, rather than
+        // being folded into whichever list happens to be open.
+        if (restore?.kind === "requests") {
+          let next = doc ?? loadRequests();
+          let firstId: string | null = null;
+          let lines = 0;
+          for (const r of restore.requests) {
+            const request = createRequest(
+              { name: r.buyerName || "Buyer", phone: r.buyerPhone },
+              r.items,
+            );
+            request.notes = r.notes.slice(0, 500);
+            if (request.items.length === 0) continue;
+            next = upsertRequest(next, request);
+            firstId = firstId ?? request.id;
+            lines += request.items.length;
+          }
+          if (firstId === null) throw new Error("That request list has no items in it.");
+          persist(next);
+          setActiveId(firstId);
+          setNotice(
+            `Restored ${restore.requests.length} request list(s), ${lines} line(s), with what had already been supplied.`,
+          );
+          return;
+        }
+
         // The per-bag price comes across too when the file had one, so the
         // request is worth something the moment it is imported.
         const lines = toRequestItems(
@@ -585,9 +625,7 @@ export default function RequestsPage() {
   const totals = active ? requestTotals(active) : null;
 
   const visible = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return matches;
-    return matches.filter((m) => m.item.name.toLowerCase().includes(q));
+    return searchList(matches, search, (m) => [m.item.name, m.item.note]);
   }, [matches, search]);
 
   /**
@@ -649,11 +687,8 @@ export default function RequestsPage() {
 
   /** Catalogue entries matching the picker search. */
   const picked = useMemo(() => {
-    const q = pickSearch.trim().toLowerCase();
-    if (!q) return catalogue.slice(0, 40);
-    return catalogue
-      .filter((c) => c.name.toLowerCase().includes(q))
-      .slice(0, 40);
+    // Best answers first, so the one you meant is at the top of the forty.
+    return searchList(catalogue, pickSearch, (c) => [c.name]).slice(0, 40);
   }, [catalogue, pickSearch]);
 
   /** Prices available from the selected source, by normalised name. */
@@ -1584,6 +1619,7 @@ export default function RequestsPage() {
       <footer className="mt-16 text-center text-xs text-gray-400">
         Built by Lathurshan
       </footer>
+      <UndoToast undo={undoer} />
     </main>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CalendarPlus,
@@ -9,9 +9,11 @@ import {
   FileText,
   Loader2,
   Plus,
+  Search,
   Settings2,
   Sheet as SheetIcon,
   Trash2,
+  UploadCloud,
   Users,
   Wallet,
   X,
@@ -40,6 +42,7 @@ import {
   removeMonth,
   removeRow,
   renameField,
+  restorePayroll,
   rowFigures,
   savePayrollDoc,
   setEmployer,
@@ -55,7 +58,12 @@ import {
   type PayrollRow,
 } from "@/lib/payroll";
 import { formatLKR, LIMITS } from "@/lib/types";
+import type { Restore } from "@/lib/restoreTypes";
+import UndoToast, { useUndo } from "@/components/UndoToast";
 import { cn } from "@/lib/cn";
+import { useFind } from "@/lib/useFind";
+import { searchList } from "@/lib/search";
+import { moveInColumn } from "@/lib/keyboard";
 
 /**
  * Wages.
@@ -85,6 +93,9 @@ export default function PayrollPage() {
     "deduction",
   );
   const [showSettings, setShowSettings] = useState(false);
+  const [rowSearch, setRowSearch] = useState("");
+  // Arriving from the quick-jump with something to find.
+  useFind(setRowSearch);
 
   useEffect(() => {
     const loaded = loadPayrollDoc();
@@ -97,6 +108,82 @@ export default function PayrollPage() {
     setDoc(next);
     savePayrollDoc(next);
   }, []);
+
+  // Wages are the last place a slip of the hand should stick: every change can
+  // be walked back from the bar or with Ctrl+Z.
+  const undoer = useUndo<PayrollDoc>(persist);
+  const remember = undoer.remember;
+  /** Record what is there, then change it. */
+  const change = useCallback(
+    (next: PayrollDoc, label: string) => {
+      if (doc) remember(doc, label);
+      persist(next);
+    },
+    [doc, persist, remember],
+  );
+
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+  const [dragging, setDragging] = useState(false);
+
+  /**
+   * Restore from a payroll workbook this app exported - one month or a year.
+   * Uploading a spreadsheet that is not one of ours says so, rather than
+   * guessing at which column is the salary.
+   */
+  const importFile = useCallback(
+    async (file: File) => {
+      if (!doc) return;
+      setImporting(true);
+      setError(null);
+      setNotice(null);
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("for", "/payroll");
+        const res = await fetch("/api/process", { method: "POST", body: fd });
+        const data = await res.json().catch(() => ({}));
+        const restore = (data as { restore?: Restore }).restore;
+        if (restore?.kind !== "payroll") {
+          throw new Error(
+            !res.ok && data.error
+              ? data.error
+              : "That is not a payroll spreadsheet from BaleBook. Upload the monthly or yearly payroll workbook downloaded from this page.",
+          );
+        }
+        const result = restorePayroll(doc, restore.payroll);
+        if (result.added.length + result.replaced.length === 0) {
+          throw new Error("No months of wages were found in that file.");
+        }
+        change(result.doc, `Payroll restored from ${file.name}`);
+        const newest = [...result.added, ...result.replaced].sort().pop();
+        const target = result.doc.months.find((m) => m.month === newest);
+        if (target) setMonthId(target.id);
+        const parts: string[] = [];
+        if (result.added.length > 0) {
+          parts.push(`added ${result.added.map(monthLabel).join(", ")}`);
+        }
+        if (result.replaced.length > 0) {
+          parts.push(`replaced ${result.replaced.map(monthLabel).join(", ")} with the file's version`);
+        }
+        setNotice(
+          `Restored from ${file.name}: ${parts.join("; ")}.` +
+            (result.ratesDiffer
+              ? " The file was worked out at different rates from the ones set here; the page keeps its own rates."
+              : "") +
+            (result.droppedFields.length > 0
+              ? ` ${result.droppedFields.length} column(s) did not fit and were left out: ${result.droppedFields.join(", ")}.`
+              : ""),
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "That file could not be read.");
+      } finally {
+        setImporting(false);
+        if (fileRef.current) fileRef.current.value = "";
+      }
+    },
+    [doc, change],
+  );
 
   const month = useMemo(
     () => doc?.months.find((m) => m.id === monthId) ?? null,
@@ -196,10 +283,10 @@ export default function PayrollPage() {
   const dropMonth = useCallback(() => {
     if (!doc || !month) return;
     const next = removeMonth(doc, month.id);
-    persist(next);
+    change(next, `${monthLabel(month.month)} removed`);
     setMonthId(monthsNewestFirst(next)[0]?.id ?? "");
     setNotice(`${monthLabel(month.month)} removed.`);
-  }, [doc, month, persist]);
+  }, [doc, month, change]);
 
   /* --------------------------------- fields -------------------------------- */
 
@@ -231,7 +318,29 @@ export default function PayrollPage() {
   const months = monthsNewestFirst(doc);
 
   return (
-    <main className="mx-auto max-w-6xl px-4 py-8">
+    <main
+      className={cn(
+        "mx-auto max-w-6xl px-4 py-8",
+        dragging && "rounded-2xl ring-4 ring-brand-200",
+      )}
+      // Drop a payroll workbook anywhere on the page to restore it.
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes("Files")) {
+          e.preventDefault();
+          setDragging(true);
+        }
+      }}
+      onDragLeave={(e) => {
+        if (e.currentTarget === e.target) setDragging(false);
+      }}
+      onDrop={(e) => {
+        const f = e.dataTransfer.files?.[0];
+        if (!f) return;
+        e.preventDefault();
+        setDragging(false);
+        importFile(f);
+      }}
+    >
       <header className="mb-5">
         <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight text-gray-900 sm:text-3xl">
           <Wallet className="h-6 w-6 text-brand-600" />
@@ -316,6 +425,29 @@ export default function PayrollPage() {
           )}
 
           <div className="ml-auto flex items-center gap-2">
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) importFile(f);
+              }}
+            />
+            <button
+              onClick={() => fileRef.current?.click()}
+              disabled={importing}
+              title="Restore from a payroll workbook downloaded from this page - one month or a whole year"
+              className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-40"
+            >
+              {importing ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <UploadCloud className="h-4 w-4" />
+              )}
+              Import
+            </button>
             <button
               onClick={() => setShowSettings((was) => !was)}
               className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
@@ -478,7 +610,7 @@ export default function PayrollPage() {
                     />
                     <button
                       onClick={() => {
-                        persist(removeField(doc, field.id));
+                        change(removeField(doc, field.id), `"${field.label}" column removed`);
                         setNotice(
                           `"${field.label}" removed, along with every figure that was in it.`,
                         );
@@ -572,6 +704,31 @@ export default function PayrollPage() {
       {/* -------------------------------- the grid ---------------------------- */}
       {month && doc && (
         <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+          {month.rows.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 border-b border-gray-100 px-3 py-2">
+              <div className="relative min-w-[12rem] flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <input
+                  value={rowSearch}
+                  onChange={(e) => setRowSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setRowSearch("");
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      document
+                        .querySelector<HTMLInputElement>('[data-col="gross"]')
+                        ?.focus();
+                    }
+                  }}
+                  placeholder="Find someone by name or TIN"
+                  className="w-full rounded-lg border border-gray-300 py-1.5 pl-9 pr-3 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                />
+              </div>
+              <span className="text-xs text-gray-400">
+                Enter moves down a column, Shift+Enter back up
+              </span>
+            </div>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full min-w-[64rem] text-sm">
               <thead>
@@ -612,7 +769,7 @@ export default function PayrollPage() {
                 </tr>
               </thead>
               <tbody>
-                {month.rows.map((row, i) => (
+                {searchList(month.rows, rowSearch, (r) => [r.name, r.tin, r.note]).map((row, i) => (
                   <Row
                     key={row.id}
                     row={row}
@@ -621,6 +778,12 @@ export default function PayrollPage() {
                     monthId={month.id}
                     persist={persist}
                     building={building}
+                    onRemove={() =>
+                      change(
+                        removeRow(doc, month.id, row.id),
+                        `${row.name || "Unnamed row"} taken off ${monthLabel(month.month)}`,
+                      )
+                    }
                     onPayslip={() =>
                       download("payslip", {
                         rowId: row.id,
@@ -781,6 +944,7 @@ export default function PayrollPage() {
           </p>
         </section>
       )}
+      <UndoToast undo={undoer} />
     </main>
   );
 }
@@ -795,6 +959,7 @@ function Row({
   persist,
   building,
   onPayslip,
+  onRemove,
 }: {
   row: PayrollRow;
   index: number;
@@ -803,6 +968,7 @@ function Row({
   persist: (next: PayrollDoc) => void;
   building: Building;
   onPayslip: () => void;
+  onRemove: () => void;
 }) {
   const figures = rowFigures(row, doc.fields, doc.rates);
   const allowances = doc.fields.filter((f) => f.kind === "allowance");
@@ -849,6 +1015,8 @@ function Row({
           value={row.gross === 0 ? "" : row.gross}
           placeholder="0"
           aria-label={`Gross salary for ${row.name || "this person"}`}
+          data-col="gross"
+          onKeyDown={moveInColumn}
           onChange={(e) =>
             persist(setRowMoney(doc, monthId, row.id, "gross", e.target.value))
           }
@@ -865,6 +1033,8 @@ function Row({
             value={row.extras[f.id] ? row.extras[f.id] : ""}
             placeholder="0"
             aria-label={`${f.label} for ${row.name || "this person"}`}
+            data-col={`extra-${f.id}`}
+            onKeyDown={moveInColumn}
             onChange={(e) =>
               persist(setRowExtra(doc, monthId, row.id, f.id, e.target.value))
             }
@@ -881,6 +1051,8 @@ function Row({
           step={100}
           value={figures.epfEmployee === 0 ? "" : figures.epfEmployee}
           aria-label={`EPF deducted from ${row.name || "this person"}`}
+          data-col="epf"
+          onKeyDown={moveInColumn}
           title={
             figures.overridden.epfEmployee
               ? "Typed in for this month. Clear it to go back to the rate."
@@ -913,6 +1085,8 @@ function Row({
           value={row.otherDeductions === 0 ? "" : row.otherDeductions}
           placeholder="0"
           aria-label={`Other deductions for ${row.name || "this person"}`}
+          data-col="other"
+          onKeyDown={moveInColumn}
           onChange={(e) =>
             persist(
               setRowMoney(doc, monthId, row.id, "otherDeductions", e.target.value),
@@ -931,6 +1105,8 @@ function Row({
             value={row.extras[f.id] ? row.extras[f.id] : ""}
             placeholder="0"
             aria-label={`${f.label} for ${row.name || "this person"}`}
+            data-col={`extra-${f.id}`}
+            onKeyDown={moveInColumn}
             onChange={(e) =>
               persist(setRowExtra(doc, monthId, row.id, f.id, e.target.value))
             }
@@ -976,7 +1152,7 @@ function Row({
           Payslip
         </button>
         <button
-          onClick={() => persist(removeRow(doc, monthId, row.id))}
+          onClick={onRemove}
           title="Take this person off the month"
           className="ml-1 rounded-md p-1 text-gray-300 transition hover:bg-red-50 hover:text-red-600"
         >

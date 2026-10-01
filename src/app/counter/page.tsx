@@ -32,6 +32,7 @@ import {
   loadCountDoc,
   removeRow,
   resetCounts,
+  restoreCounts,
   saveCountDoc,
   searchRows,
   setContainer,
@@ -42,7 +43,10 @@ import {
   type CountRow,
 } from "@/lib/counter";
 import { shipmentFromFilename } from "@/lib/shipment";
+import type { Restore } from "@/lib/restoreTypes";
+import UndoToast, { useUndo } from "@/components/UndoToast";
 import { cn } from "@/lib/cn";
+import { useFind } from "@/lib/useFind";
 
 type Filter = "all" | "todo" | "off";
 
@@ -62,6 +66,8 @@ export default function CounterPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // Arriving from the quick-jump with something to find.
+  useFind(setQuery);
   const [filter, setFilter] = useState<Filter>("all");
   const [newItem, setNewItem] = useState("");
   /** The row just changed, so it can be flashed and scrolled to. */
@@ -77,6 +83,10 @@ export default function CounterPage() {
     setDoc(next);
     saveCountDoc(next);
   }, []);
+
+  // Every change to the count can be walked back, from the bar or Ctrl+Z.
+  const undoer = useUndo<CountDoc>(persist);
+  const remember = undoer.remember;
 
   const totals = useMemo(() => countTotals(doc ?? emptyCountDoc()), [doc]);
 
@@ -101,13 +111,53 @@ export default function CounterPage() {
       try {
         const fd = new FormData();
         fd.append("file", f);
+        fd.append("for", "/counter");
         const res = await fetch("/api/process", { method: "POST", body: fd });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Could not read that file.");
 
         const parsed = data as ParsedOrder;
+        const restore = (data as { restore?: Restore }).restore;
+
+        // A count sheet this app exported: the counts go back on, they do not
+        // become a fresh list to count from zero.
+        if (restore?.kind === "count") {
+          const current = doc ?? emptyCountDoc();
+          const fromName = shipmentFromFilename(f.name);
+          const result = restoreCounts(current, restore.rows, {
+            orderNumber: restore.orderNumber || fromName.orderNumber,
+            containerId: restore.containerId || fromName.containerId,
+          });
+          remember(current, "Count restored");
+          persist(result.doc);
+          setQuery("");
+          setFilter("all");
+          setNotice(
+            result.withoutList
+              ? `Restored ${result.added} counted item(s) from ${f.name}. No list was open, so there is nothing to compare them with - upload the buyer list first and then this count to see what is short.`
+              : `Restored the counts for ${result.matched} item(s) from ${f.name}` +
+                  (result.added > 0
+                    ? `, and added ${result.added} that were not on the list.`
+                    : "."),
+          );
+          return;
+        }
+
+        // Replacing a count that is under way loses every tally on it.
+        if (
+          doc &&
+          doc.rows.some((r) => r.touched) &&
+          !window.confirm(
+            "Start a new count from this file? The count on screen will be replaced. You can undo this straight afterwards.",
+          )
+        ) {
+          return;
+        }
+
         const orderNumber =
-          shipmentFromFilename(f.name).orderNumber || parsed.title;
+          (restore?.kind === "manifest" ? restore.orderNumber : "") ||
+          shipmentFromFilename(f.name).orderNumber ||
+          parsed.title;
         // Only names and quantities cross over. The prices in that file stay in it.
         const next = fromOrderItems(
           parsed.items.map((item) => ({ name: item.name, qty: item.qty })),
@@ -117,6 +167,7 @@ export default function CounterPage() {
         if (next.rows.length === 0) {
           throw new Error("No items were found in that file.");
         }
+        if (doc && doc.rows.length > 0) remember(doc, "New list loaded");
         persist(next);
         setQuery("");
         setFilter("all");
@@ -131,7 +182,7 @@ export default function CounterPage() {
         if (inputRef.current) inputRef.current.value = "";
       }
     },
-    [doc, persist],
+    [doc, persist, remember],
   );
 
   /* -------------------------------- counting ------------------------------- */
@@ -139,10 +190,11 @@ export default function CounterPage() {
   const bump = useCallback(
     (row: CountRow, by: number) => {
       if (!doc) return;
+      remember(doc, `${row.name} ${by > 0 ? "+" : ""}${by}`);
       persist(addToCount(doc, row.id, by));
       setLastTouched(row.id);
     },
-    [doc, persist],
+    [doc, persist, remember],
   );
 
   /**
@@ -156,16 +208,22 @@ export default function CounterPage() {
     if (!doc) return;
     const match = bestMatch(doc, query);
     if (!match) {
-      setError(`Nothing here matches "${query.trim()}". Add it below if it is new.`);
+      const candidates = searchRows(doc, query).length;
+      setError(
+        candidates > 1
+          ? `"${query.trim()}" could be ${candidates} items - tap the right one below, or type a little more.`
+          : `Nothing here matches "${query.trim()}". Add it below if it is new.`,
+      );
       return;
     }
+    remember(doc, `${match.name} +1 (now ${match.counted + 1})`);
     persist(addToCount(doc, match.id, 1));
     setLastTouched(match.id);
     setError(null);
     setNotice(`${match.name}: ${match.counted + 1}`);
     setQuery("");
     searchRef.current?.focus();
-  }, [doc, query, persist]);
+  }, [doc, query, persist, remember]);
 
   const submitNewItem = useCallback(() => {
     if (!doc) return;
@@ -584,7 +642,11 @@ export default function CounterPage() {
                       ))}
                       {row.touched && (
                         <button
-                          onClick={() => doc && persist(clearCount(doc, row.id))}
+                          onClick={() => {
+                            if (!doc) return;
+                            remember(doc, `${row.name} back to not counted`);
+                            persist(clearCount(doc, row.id));
+                          }}
                           title="Back to never counted"
                           className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-400 transition hover:bg-gray-100 hover:text-gray-600"
                         >
@@ -594,7 +656,11 @@ export default function CounterPage() {
                       )}
                       {row.added && (
                         <button
-                          onClick={() => doc && persist(removeRow(doc, row.id))}
+                          onClick={() => {
+                            if (!doc) return;
+                            remember(doc, `${row.name} removed`);
+                            persist(removeRow(doc, row.id));
+                          }}
                           title="Remove this item"
                           className={cn(
                             "inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-400 transition hover:bg-red-50 hover:text-red-600",
@@ -640,7 +706,9 @@ export default function CounterPage() {
           <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
             <button
               onClick={() => {
-                if (doc) persist(resetCounts(doc));
+                if (!doc) return;
+                remember(doc, "Every tally reset to zero");
+                persist(resetCounts(doc));
                 setNotice("Every tally is back to zero. The item list is kept.");
               }}
               className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
@@ -695,6 +763,7 @@ export default function CounterPage() {
           </p>
         </>
       )}
+      <UndoToast undo={undoer} />
     </main>
   );
 }

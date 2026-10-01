@@ -757,6 +757,131 @@ export function isMonthReady(
   );
 }
 
+/* --------------------------------- restore -------------------------------- */
+
+export interface RestoredPayrollInput {
+  employer: string;
+  rates: PayrollRates | null;
+  fields: Array<{ label: string; kind: "allowance" | "deduction" }>;
+  months: Array<{
+    month: string;
+    paidOn: string;
+    rows: Array<{
+      name: string;
+      tin: string;
+      gross: number;
+      otherDeductions: number;
+      extras: Record<string, number>;
+      overrides: PayrollOverrides;
+      note: string;
+    }>;
+  }>;
+}
+
+export interface RestorePayrollResult {
+  doc: PayrollDoc;
+  added: string[];
+  replaced: string[];
+  /** Columns in the file that could not be added, the payroll being full. */
+  droppedFields: string[];
+  /** The file was worked out at different rates from the ones set here. */
+  ratesDiffer: boolean;
+}
+
+/**
+ * Bring a payroll workbook this app exported back onto the page.
+ *
+ * A month in the file replaces the same month here rather than being merged row
+ * by row: the workbook is the record of what was paid, and merging two versions
+ * of one month is how somebody ends up paid twice. Months not in the file are
+ * left alone, so restoring August does not touch July.
+ *
+ * Added columns are matched by name, so "PAYE" in the file lands in the PAYE
+ * column here. The rates are only taken from the file when there is no payroll
+ * yet; otherwise the page keeps its own and says that they differ, because
+ * quietly changing a contribution rate changes every month on the page.
+ */
+export function restorePayroll(
+  doc: PayrollDoc,
+  restored: RestoredPayrollInput,
+): RestorePayrollResult {
+  let next: PayrollDoc = doc;
+  const droppedFields: string[] = [];
+
+  const fieldIdFor = new Map<string, string>();
+  for (const field of restored.fields) {
+    const label = sanitizeLine(field.label, FIELD_LABEL_MAX);
+    if (label === "") continue;
+    const existing = next.fields.find(
+      (f) => f.label.toLowerCase() === label.toLowerCase(),
+    );
+    if (existing) {
+      fieldIdFor.set(label.toLowerCase(), existing.id);
+      continue;
+    }
+    const result = addField(next, label, field.kind);
+    if (result.field) {
+      next = result.doc;
+      fieldIdFor.set(label.toLowerCase(), result.field.id);
+    } else {
+      droppedFields.push(label);
+    }
+  }
+
+  const hadMonths = next.months.length > 0;
+  const fileRates = restored.rates;
+  const ratesDiffer =
+    hadMonths &&
+    fileRates !== null &&
+    (fileRates.epfEmployee !== next.rates.epfEmployee ||
+      fileRates.epfEmployer !== next.rates.epfEmployer ||
+      fileRates.etf !== next.rates.etf);
+  if (!hadMonths && fileRates !== null) next = setRates(next, fileRates);
+  if (next.employer === "" && restored.employer !== "") {
+    next = setEmployer(next, restored.employer);
+  }
+
+  const added: string[] = [];
+  const replaced: string[] = [];
+  const months = [...next.months];
+
+  for (const month of restored.months) {
+    if (!isMonthKey(month.month)) continue;
+    const rows = month.rows.slice(0, MAX_ROWS).map((row) => {
+      const extras: Record<string, number> = {};
+      for (const [label, value] of Object.entries(row.extras)) {
+        const id = fieldIdFor.get(label.toLowerCase());
+        if (id) extras[id] = value;
+      }
+      return createRow({ ...row, extras });
+    });
+    const fresh: PayrollMonth = {
+      id: uid("pm"),
+      month: month.month,
+      paidOn: isDateKey(month.paidOn) ? month.paidOn : "",
+      rows,
+      note: "",
+    };
+    const at = months.findIndex((m) => m.month === month.month);
+    if (at >= 0) {
+      fresh.note = months[at].note;
+      months[at] = { ...fresh, id: months[at].id };
+      replaced.push(month.month);
+    } else if (months.length < MAX_MONTHS) {
+      months.push(fresh);
+      added.push(month.month);
+    }
+  }
+
+  return {
+    doc: touch(next, { months }),
+    added,
+    replaced,
+    droppedFields,
+    ratesDiffer,
+  };
+}
+
 /* ------------------------------- persistence ------------------------------ */
 
 function parseRates(input: unknown): PayrollRates {

@@ -32,6 +32,8 @@ import {
   Clock,
 } from "lucide-react";
 import type { ParsedOrder } from "@/lib/types";
+import type { RestoredLot, Restore } from "@/lib/restoreTypes";
+import UndoToast, { useUndo } from "@/components/UndoToast";
 import { formatLKR } from "@/lib/types";
 import {
   AGE_BUCKETS,
@@ -50,6 +52,7 @@ import {
   removeEmptyItems,
   removeItem,
   saveStockpile,
+  addRestoredLots,
   stockpileTotals,
   toCsv,
   withdraw,
@@ -58,6 +61,8 @@ import {
   type Stockpile,
 } from "@/lib/stockpile";
 import { cn } from "@/lib/cn";
+import { useFind } from "@/lib/useFind";
+import { matches } from "@/lib/search";
 
 const BUCKET_STYLES: Record<
   AgeBucket["key"],
@@ -98,6 +103,8 @@ export default function StockpilePage() {
   const [sp, setSp] = useState<Stockpile>(emptyStockpile);
   const [loaded, setLoaded] = useState(false);
   const [search, setSearch] = useState("");
+  // Arriving from the quick-jump with something to find.
+  useFind(setSearch);
   const [sortKey, setSortKey] = useState<SortKey>("age");
   const [bucketFilter, setBucketFilter] = useState<AgeBucket["key"] | "">("");
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -116,6 +123,13 @@ export default function StockpilePage() {
   const [fMergeInto, setFMergeInto] = useState("");
 
   const pdfInputRef = useRef<HTMLInputElement>(null);
+  /** A stockpile export waiting for "replace" or "add". */
+  const [pendingRestore, setPendingRestore] = useState<{
+    lots: RestoredLot[];
+    detailed: boolean;
+    fileName: string;
+  } | null>(null);
+  const [dragging, setDragging] = useState(false);
   const jsonInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -129,12 +143,14 @@ export default function StockpilePage() {
     saveStockpile(next);
   }, []);
 
+  const undoer = useUndo<Stockpile>(apply);
+  const remember = undoer.remember;
+
   const totals = useMemo(() => stockpileTotals(sp), [sp]);
 
   const rows = useMemo(() => {
-    const q = search.trim().toLowerCase();
     const list = sp.items.filter((item) => {
-      if (q && !item.name.toLowerCase().includes(q)) return false;
+      if (!matches(search, item.name, ...item.lots.map((l) => l.source))) return false;
       if (bucketFilter && ageBucket(itemAgeDays(item)).key !== bucketFilter) {
         return false;
       }
@@ -191,13 +207,14 @@ export default function StockpilePage() {
         source: fSource.trim() || "Added manually",
       },
     ]);
+    remember(sp, `Added bags to ${fName.trim()}`);
     apply(stockpile);
     setError(null);
     setNotice(
       `Added ${describeBags(bagsAdded, bagsAdded * perBag)} of ${fName.trim()}.`,
     );
     closeDialog();
-  }, [sp, fName, fBags, fPerBag, fSource, apply, closeDialog]);
+  }, [sp, fName, fBags, fPerBag, fSource, apply, closeDialog, remember]);
 
   const submitLot = useCallback(() => {
     if (!dialogItem) return;
@@ -216,18 +233,20 @@ export default function StockpilePage() {
         source: fSource.trim() || "Added manually",
       },
     ]);
+    remember(sp, `Added a batch to ${dialogItem.name}`);
     apply(stockpile);
     setError(null);
     setNotice(
       `Added ${describeBags(bags, bags * perBag)} to ${dialogItem.name}.`,
     );
     closeDialog();
-  }, [sp, dialogItem, fBags, fPerBag, fSource, apply, closeDialog]);
+  }, [sp, dialogItem, fBags, fPerBag, fSource, apply, closeDialog, remember]);
 
   const submitWithdraw = useCallback(() => {
     if (!dialogItem) return;
     try {
       const result = withdraw(sp, dialogItem.id, Number(fBags), fReason);
+      remember(sp, `Took bags of ${dialogItem.name}`);
       apply(result.stockpile);
       setError(null);
       setNotice(
@@ -237,16 +256,17 @@ export default function StockpilePage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not remove those bags.");
     }
-  }, [sp, dialogItem, fBags, fReason, apply, closeDialog]);
+  }, [sp, dialogItem, fBags, fReason, apply, closeDialog, remember]);
 
   const submitMerge = useCallback(() => {
     if (!dialogItem || !fMergeInto) return setError("Choose an item to merge into.");
     const target = sp.items.find((i) => i.id === fMergeInto);
+    remember(sp, `Merged ${dialogItem.name}`);
     apply(mergeItems(sp, dialogItem.id, fMergeInto));
     setError(null);
     setNotice(`Merged ${dialogItem.name} into ${target?.name ?? "item"}.`);
     closeDialog();
-  }, [sp, dialogItem, fMergeInto, apply, closeDialog]);
+  }, [sp, dialogItem, fMergeInto, apply, closeDialog, remember]);
 
   const importPdf = useCallback(
     async (file: File) => {
@@ -256,11 +276,25 @@ export default function StockpilePage() {
       try {
         const fd = new FormData();
         fd.append("file", file);
+        fd.append("for", "/stockpile");
         const res = await fetch("/api/process", { method: "POST", body: fd });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Failed to read the PDF.");
+        if (!res.ok) throw new Error(data.error || "Failed to read that file.");
         const parsed = data as ParsedOrder;
+        const restore = (data as { restore?: Restore }).restore;
 
+        // A stockpile export from this app. Whether it replaces what is here or
+        // adds to it is a real choice - adding last week's export to a stockpile
+        // that already holds it would count every bag twice - so it is asked.
+        if (restore?.kind === "stockpile") {
+          if (restore.lots.length === 0) {
+            throw new Error("That stockpile export has no bags in it.");
+          }
+          setPendingRestore({ lots: restore.lots, detailed: restore.detailed, fileName: file.name });
+          return;
+        }
+
+        remember(sp, `Imported ${file.name}`);
         const { stockpile, bagsAdded, itemsTouched } = addLots(
           sp,
           parsed.items.map((it) => ({
@@ -281,7 +315,26 @@ export default function StockpilePage() {
         if (pdfInputRef.current) pdfInputRef.current.value = "";
       }
     },
-    [sp, apply],
+    [sp, apply, remember],
+  );
+
+  const applyRestore = useCallback(
+    (mode: "replace" | "add") => {
+      if (!pendingRestore) return;
+      remember(sp, mode === "replace" ? "Stockpile replaced from a file" : "Stockpile export added");
+      const base = mode === "replace" ? emptyStockpile() : sp;
+      const result = addRestoredLots(base, pendingRestore.lots);
+      apply(result.stockpile);
+      setPendingRestore(null);
+      setNotice(
+        (mode === "replace" ? "Stockpile restored from " : "Added ") +
+          `${pendingRestore.fileName}: ${result.bagsAdded} bags across ${result.itemsTouched} items` +
+          (pendingRestore.detailed
+            ? ", each batch on the date it was first added."
+            : ". The PDF does not carry batch dates, so they are dated today - restore from the CSV export to keep their ages."),
+      );
+    },
+    [pendingRestore, sp, apply, remember],
   );
 
   const importJson = useCallback(
@@ -290,6 +343,7 @@ export default function StockpilePage() {
       setNotice(null);
       try {
         const parsed = parseStockpile(JSON.parse(await file.text()));
+        remember(sp, "Stockpile file loaded");
         apply(parsed);
         setNotice(
           `Stockpile file loaded: ${parsed.items.length} items, ${stockpileTotals(parsed).bags} bags.`,
@@ -300,7 +354,7 @@ export default function StockpilePage() {
         if (jsonInputRef.current) jsonInputRef.current.value = "";
       }
     },
-    [apply],
+    [sp, apply, remember],
   );
 
   const downloadBlob = useCallback((blob: Blob, filename: string) => {
@@ -387,13 +441,14 @@ export default function StockpilePage() {
         `Clear the entire stockpile?\n\n` +
           `${t.itemCount} item(s), ${t.bags} bag(s) worth ${formatLKR(t.value)} ` +
           `will be removed, along with the movement history.\n\n` +
-          `Save the file first if you might need this. This cannot be undone.`,
+          `You can undo this straight afterwards, but save the file first if you might need it later.`,
       )
     ) {
       return;
     }
 
     const fresh = emptyStockpile();
+    remember(sp, "Stockpile cleared");
     setSp(fresh);
     saveStockpile(fresh);
     setExpanded(null);
@@ -402,11 +457,12 @@ export default function StockpilePage() {
     setShowHistory(false);
     setError(null);
     setNotice("Stockpile cleared.");
-  }, [sp]);
+  }, [sp, remember]);
 
   const tidyUp = useCallback(() => {
     const before = sp.items.length;
     const next = removeEmptyItems(sp);
+    remember(sp, "Empty items tidied away");
     apply(next);
     const removed = before - next.items.length;
     setNotice(
@@ -414,14 +470,38 @@ export default function StockpilePage() {
         ? `Removed ${removed} empty item${removed === 1 ? "" : "s"}.`
         : "Nothing to tidy - every item still has bags.",
     );
-  }, [sp, apply]);
+  }, [sp, apply, remember]);
 
   /* -------------------------------- render -------------------------------- */
 
   const isEmpty = loaded && sp.items.length === 0;
 
   return (
-    <main className="mx-auto max-w-6xl px-4 py-8 sm:py-12">
+    <main
+      className={cn(
+        "mx-auto max-w-6xl px-4 py-8 sm:py-12",
+        dragging && "rounded-2xl ring-4 ring-brand-200",
+      )}
+      // The whole page takes a dropped file: a supplier order or a stockpile
+      // export, PDF or spreadsheet.
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes("Files")) {
+          e.preventDefault();
+          setDragging(true);
+        }
+      }}
+      onDragLeave={(e) => {
+        if (e.currentTarget === e.target) setDragging(false);
+      }}
+      onDrop={(e) => {
+        const f = e.dataTransfer.files?.[0];
+        if (!f) return;
+        e.preventDefault();
+        setDragging(false);
+        if (f.name.toLowerCase().endsWith(".json")) importJson(f);
+        else importPdf(f);
+      }}
+    >
       <header className="mb-8">
         <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight text-gray-900 sm:text-3xl">
           <Boxes className="h-7 w-7 text-brand-600" />
@@ -436,7 +516,7 @@ export default function StockpilePage() {
       <input
         ref={pdfInputRef}
         type="file"
-        accept="application/pdf,.pdf"
+        accept=".pdf,.csv,.xlsx,application/pdf,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0];
@@ -463,6 +543,41 @@ export default function StockpilePage() {
         <Banner tone="info" onClose={() => setNotice(null)}>
           {notice}
         </Banner>
+      )}
+      {pendingRestore && (
+        <div className="mb-4 animate-fade-in rounded-xl border border-brand-200 bg-brand-50 px-4 py-3 text-sm text-brand-900">
+          <p className="font-medium">
+            {pendingRestore.fileName} is a stockpile export from BaleBook -{" "}
+            {pendingRestore.lots.reduce((n, l) => n + l.bags, 0)} bags across{" "}
+            {new Set(pendingRestore.lots.map((l) => l.name.toLowerCase())).size} items.
+          </p>
+          <p className="mt-1 text-xs text-brand-800">
+            Replace what is here with it to restore a saved stockpile, or add it
+            on top if these bags are not already counted.
+            {sp.items.length > 0 &&
+              ` The stockpile holds ${totals.bags} bags now.`}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              onClick={() => applyRestore("replace")}
+              className="rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-700"
+            >
+              Replace the stockpile
+            </button>
+            <button
+              onClick={() => applyRestore("add")}
+              className="rounded-lg border border-brand-300 bg-white px-3 py-1.5 text-sm font-semibold text-brand-700 transition hover:bg-brand-50"
+            >
+              Add to it
+            </button>
+            <button
+              onClick={() => setPendingRestore(null)}
+              className="rounded-lg px-3 py-1.5 text-sm text-gray-600 transition hover:bg-white"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       )}
       {totals.deadBags > 0 && (
         <Banner tone="warn">
@@ -563,7 +678,7 @@ export default function StockpilePage() {
           Add item
         </Tool>
         <Tool onClick={() => pdfInputRef.current?.click()} icon={UploadCloud}>
-          Import PDF
+          Import file
         </Tool>
         <Tool onClick={tidyUp} icon={Sparkles}>
           Tidy up
@@ -781,6 +896,7 @@ export default function StockpilePage() {
                                     `Delete "${item.name}" and its ${bags} bag(s) from the stockpile?`,
                                   )
                                 ) {
+                                  remember(sp, `${item.name} deleted`);
                                   apply(removeItem(sp, item.id));
                                   setNotice(`Deleted ${item.name}.`);
                                 }
@@ -1076,6 +1192,7 @@ export default function StockpilePage() {
       <footer className="mt-16 text-center text-xs text-gray-400">
         Built by Lathurshan
       </footer>
+      <UndoToast undo={undoer} />
     </main>
   );
 }

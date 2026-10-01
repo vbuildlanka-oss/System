@@ -13,12 +13,14 @@ import {
   FileSpreadsheet,
   ListChecks,
   Menu,
+  Search,
   PencilRuler,
   Scale,
   Wallet,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
+import QuickJump, { type JumpPage } from "./QuickJump";
 
 /**
  * The top bar.
@@ -134,6 +136,29 @@ export const NAV_GROUPS: NavGroup[] = [
 /** Every page in the bar, flattened - used to name the current one. */
 const ALL_ITEMS: NavItem[] = NAV_GROUPS.flatMap((group) => group.items);
 
+/** Every page, for the quick-jump. */
+const JUMP_PAGES: JumpPage[] = [
+  ...NAV_GROUPS.flatMap((group) =>
+    group.items.map((item) => ({
+      href: item.href,
+      label: item.label,
+      hint: item.hint,
+      group: group.label,
+    })),
+  ),
+  {
+    href: "/data",
+    label: "Saved data",
+    hint: "Back up, restore or clear what this browser holds",
+    group: "Settings",
+  },
+];
+
+/** Opens the quick-jump. The shortcut is "/" or Ctrl+K; this is for thumbs. */
+function openQuickJump() {
+  window.dispatchEvent(new Event("balebook:quickjump"));
+}
+
 export default function Nav() {
   const pathname = usePathname();
   const [openGroup, setOpenGroup] = useState<string | null>(null);
@@ -201,6 +226,18 @@ export default function Nav() {
 
           {/* ------------------------------ desktop ------------------------------ */}
           <div className="hidden items-center gap-1 md:flex">
+            <button
+              type="button"
+              onClick={openQuickJump}
+              title="Search everything (press / or Ctrl+K)"
+              className="mr-1 inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-500 transition hover:border-gray-300 hover:text-gray-700"
+            >
+              <Search className="h-4 w-4" />
+              <span className="hidden lg:inline">Search</span>
+              <kbd className="rounded border border-gray-200 bg-gray-50 px-1.5 text-[10px] font-medium text-gray-400">
+                /
+              </kbd>
+            </button>
             {NAV_GROUPS.map((group) => {
               const Icon = group.icon;
               const holdsCurrent = group.items.some(
@@ -294,6 +331,15 @@ export default function Nav() {
           </div>
 
           {/* ------------------------------- phone ------------------------------- */}
+          <div className="flex items-center gap-1 md:hidden">
+          <button
+            type="button"
+            onClick={openQuickJump}
+            aria-label="Search everything"
+            className="inline-flex items-center rounded-lg px-3 py-2 text-gray-600 transition hover:bg-gray-100"
+          >
+            <Search className="h-5 w-5" />
+          </button>
           <button
             type="button"
             onClick={() => setMenuOpen((was) => !was)}
@@ -307,6 +353,7 @@ export default function Nav() {
               <Menu className="h-5 w-5" />
             )}
           </button>
+          </div>
         </div>
 
         {/* Everything, under its heading. No dropdowns on a phone: a tap that
@@ -358,6 +405,7 @@ export default function Nav() {
           </div>
         )}
       </div>
+      <QuickJump pages={JUMP_PAGES} />
     </nav>
   );
 }

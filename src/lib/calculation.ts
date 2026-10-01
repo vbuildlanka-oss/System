@@ -128,6 +128,51 @@ export function fromOrderItems(
   };
 }
 
+/**
+ * Put a calculation this app exported back, markups and all.
+ *
+ * The workbook does not record which markup was the across-the-board figure, so
+ * it is taken to be the one most rows carry - which is what across-the-board
+ * means. Every row on a different markup comes back as set by hand, so a later
+ * change to the base figure leaves it alone, exactly as before the export.
+ */
+export function fromRestoredRows(
+  rows: Array<{
+    name: string;
+    qty: number;
+    costPerBag: number;
+    markup: number;
+    fast: boolean;
+  }>,
+  orderNumber = "",
+): CalcDoc {
+  const tally = new Map<number, number>();
+  for (const row of rows) tally.set(row.markup, (tally.get(row.markup) ?? 0) + 1);
+  let base = DEFAULT_MARKUP;
+  let best = -1;
+  for (const [markup, n] of Array.from(tally.entries())) {
+    if (n > best || (n === best && markup < base)) {
+      base = markup;
+      best = n;
+    }
+  }
+  const baseMarkup = clampNumber(base, LIMITS.markup);
+  return {
+    ...emptyCalcDoc(),
+    orderNumber: sanitizeLine(orderNumber, LIMITS.title),
+    baseMarkup,
+    rows: rows
+      .slice(0, MAX_ROWS)
+      .map((row) =>
+        createCalcRow({
+          ...row,
+          overridden: clampNumber(row.markup, LIMITS.markup) !== baseMarkup,
+        }),
+      )
+      .filter((row) => row.name !== "" && row.qty > 0),
+  };
+}
+
 /* --------------------------------- derived -------------------------------- */
 
 /** What a bag of this item sells for. */

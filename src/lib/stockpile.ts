@@ -583,6 +583,57 @@ function csvCell(value: string | number): string {
 }
 
 /**
+ * Put lots from a stockpile export back, each on the day it was first added.
+ *
+ * Dates matter here more than anywhere: the stockpile's whole job is to show
+ * what is ageing, and restoring every lot as "added today" would make
+ * three-month-old bags look fresh. So the lots are grouped by the date the file
+ * gives them and added on that date. A lot with no date (the PDF export carries
+ * none per lot) falls back to `fallbackDay`, then to today.
+ */
+export function addRestoredLots(
+  sp: Stockpile,
+  lots: Array<{
+    name: string;
+    bags: number;
+    perBag: number;
+    source: string;
+    addedOn: string;
+  }>,
+  fallbackDay = "",
+): { stockpile: Stockpile; itemsTouched: number; bagsAdded: number } {
+  const byDay = new Map<string, LotInput[]>();
+  for (const lot of lots) {
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(lot.addedOn)
+      ? lot.addedOn
+      : /^\d{4}-\d{2}-\d{2}$/.test(fallbackDay)
+        ? fallbackDay
+        : "";
+    const list = byDay.get(day) ?? [];
+    list.push({ name: lot.name, bags: lot.bags, perBag: lot.perBag, source: lot.source });
+    byDay.set(day, list);
+  }
+
+  let current = sp;
+  let bagsAdded = 0;
+  const touched = new Set<string>();
+  const days = Array.from(byDay.keys()).sort();
+  for (const day of days) {
+    // Midday, so a time zone either side of UTC still lands on the same date.
+    const at = day === "" ? new Date() : new Date(`${day}T12:00:00.000Z`);
+    const result = addLots(current, byDay.get(day) ?? [], Number.isNaN(at.getTime()) ? new Date() : at);
+    current = result.stockpile;
+    bagsAdded += result.bagsAdded;
+    for (const item of current.items) {
+      if ((byDay.get(day) ?? []).some((l) => normalizeItemKey(l.name) === item.key)) {
+        touched.add(item.id);
+      }
+    }
+  }
+  return { stockpile: current, itemsTouched: touched.size, bagsAdded };
+}
+
+/**
  * One row per lot, so a spreadsheet can pivot it any way you like while still
  * carrying the full batch detail (source and date).
  */

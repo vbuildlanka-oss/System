@@ -103,15 +103,31 @@ let preferred: Engine = ENGINES[0];
  * newline when the y coordinate changes, and each page prefixed with a blank
  * line. Changing it would quietly re-break parsing of every supplier sheet.
  */
-async function extractWith(version: Engine, bytes: Uint8Array): Promise<string> {
+interface Extracted {
+  /** Exactly what pdf-parse would have produced. Supplier parsing reads this. */
+  text: string;
+  /**
+   * The same lines with a tab between the separate pieces of text on them.
+   *
+   * Only read for documents this app printed. Joining cells with nothing
+   * between them is what supplier parsing was written against, but it glues
+   * "Anorak #2" to its 9 bags; a document we laid out ourselves can be read by
+   * its columns instead, with no guessing.
+   */
+  tabbed: string;
+}
+
+async function extractWith(version: Engine, bytes: Uint8Array): Promise<Extracted> {
   const engine = loadEngine(version);
   // A fresh copy per attempt: pdf.js takes ownership of what it is handed, so a
   // failed attempt must not be able to spoil the buffer for the next engine.
   const doc = await engine.getDocument(new Uint8Array(bytes));
   try {
     let text = "";
+    let tabbed = "";
     for (let i = 1; i <= doc.numPages; i++) {
       let pageText = "";
+      let pageTabbed = "";
       try {
         const page = await doc.getPage(i);
         const content = await page.getTextContent({
@@ -120,17 +136,25 @@ async function extractWith(version: Engine, bytes: Uint8Array): Promise<string> 
         });
         let lastY: number | undefined;
         for (const item of content.items) {
-          if (lastY === item.transform[5] || !lastY) pageText += item.str;
+          const sameLine = lastY === item.transform[5] || !lastY;
+          if (sameLine) pageText += item.str;
           else pageText += `\n${item.str}`;
+          // Each piece carries where it starts across the page, so a table
+          // can be read by column position rather than by what the text says.
+          const piece = `${Math.round(item.transform[4])}\u0001${item.str}`;
+          pageTabbed +=
+            sameLine ? (pageTabbed === "" ? piece : `\t${piece}`) : `\n${piece}`;
           lastY = item.transform[5];
         }
       } catch {
         // One unreadable page should not lose the other twenty.
         pageText = "";
+        pageTabbed = "";
       }
       text = `${text}\n\n${pageText}`;
+      tabbed = `${tabbed}\n\n${pageTabbed}`;
     }
-    return text;
+    return { text, tabbed };
   } finally {
     try {
       doc.destroy();
@@ -178,7 +202,7 @@ function checkEnvelope(bytes: Uint8Array): void {
   }
 }
 
-async function extractText(buffer: Buffer): Promise<string> {
+async function extractText(buffer: Buffer): Promise<Extracted> {
   const bytes = new Uint8Array(buffer);
   checkEnvelope(bytes);
 
@@ -193,10 +217,10 @@ async function extractText(buffer: Buffer): Promise<string> {
 
   for (const version of order) {
     try {
-      const text = await extractWith(version, bytes);
-      if (text.trim() !== "") {
+      const extracted = await extractWith(version, bytes);
+      if (extracted.text.trim() !== "") {
         preferred = version;
-        return text;
+        return extracted;
       }
       // Readable but no text: remember it, another engine may do better.
       sawEmpty = true;
@@ -215,7 +239,7 @@ async function extractText(buffer: Buffer): Promise<string> {
   // Every engine opened it and agreed there is no text in it - likely a scan.
   // Hand back the empty string and let the caller say "no items found", which
   // is more use than a hard failure.
-  if (sawEmpty) return "";
+  if (sawEmpty) return { text: "", tabbed: "" };
 
   throw new PdfReadError(
     "unreadable",
@@ -396,7 +420,7 @@ function parseQuantityList(lines: string[]): QtyListResult {
  * three counts before the money - "<name><wanted><supplied><to go>" - so reading
  * it as a supplier row leaves the first two glued to the name: "Anorak210".
  */
-const REQUEST_LAYOUT_RE = /wanted\s*supplied\s*to\s*go/i;
+export const REQUEST_LAYOUT_RE = /wanted\s*supplied\s*to\s*go/i;
 
 /**
  * Split "<name><wanted><supplied><to go>" from a request list.
@@ -413,9 +437,10 @@ const REQUEST_LAYOUT_RE = /wanted\s*supplied\s*to\s*go/i;
 function splitRequestRow(
   prefix: string,
   wanted: number,
-): { name: string; qty: number } | null {
+): { name: string; qty: number; supplied: number } | null {
   const compact = prefix.replace(/\s+$/, "");
-  let best: { name: string; qty: number; length: number } | null = null;
+  let best: { name: string; qty: number; supplied: number; length: number } | null =
+    null;
 
   for (let supplied = 0; supplied <= wanted; supplied += 1) {
     const suffix = `${wanted}${supplied}${wanted - supplied}`;
@@ -429,10 +454,12 @@ function splitRequestRow(
       (suffix.length === best.length &&
         /\d$/.test(best.name) &&
         !/\d$/.test(name));
-    if (better) best = { name, qty: wanted, length: suffix.length };
+    if (better) best = { name, qty: wanted, supplied, length: suffix.length };
   }
 
-  return best === null ? null : { name: best.name, qty: best.qty };
+  return best === null
+    ? null
+    : { name: best.name, qty: best.qty, supplied: best.supplied };
 }
 
 /**
@@ -454,7 +481,7 @@ function splitNameAndQty(
       // A request list puts two more counts between the name and the money.
       if (requestLayout) {
         const asRequest = splitRequestRow(trimmed, derived);
-        if (asRequest) return asRequest;
+        if (asRequest) return { name: asRequest.name, qty: asRequest.qty };
       }
       const qtyStr = String(derived);
       const compact = trimmed.replace(/\s+$/, "");
@@ -473,12 +500,272 @@ function splitNameAndQty(
   return null;
 }
 
-export async function parseOrderPdf(buffer: Buffer): Promise<ParsedOrder> {
-  const text = await extractText(buffer);
-  const rawLines: string[] = text
+/**
+ * The BALEBOOK wordmark at the top of every document this app prints.
+ *
+ * It is rendered with wide letter spacing and arrives as "B A L E B O O K" (or,
+ * from some engines, run together). Uppercase and on a line of its own, so a
+ * supplier sheet that merely mentions the word cannot match it.
+ */
+const BRAND_LINE_RE = /^B\s*A\s*L\s*E\s*B\s*O\s*O\s*K$/;
+
+/** True for the wordmark line this app prints, and nothing a supplier would. */
+export function isBalebookWordmark(line: string): boolean {
+  return BRAND_LINE_RE.test(line.trim());
+}
+
+export interface PdfCell {
+  x: number;
+  text: string;
+}
+
+export interface PdfText {
+  text: string;
+  /** Trimmed, non-empty lines in reading order. */
+  lines: string[];
+  /**
+   * The same lines split into their separate pieces of text, each with the x
+   * position it starts at. Only consulted for documents this app printed.
+   */
+  cells: PdfCell[][];
+  /** True when the document is one this app printed. */
+  balebook: boolean;
+}
+
+/** Pull the text out of a PDF and say whether it is one of ours. */
+export async function readPdfText(buffer: Buffer): Promise<PdfText> {
+  const { text, tabbed } = await extractText(buffer);
+  const lines = text
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
+  const cells = tabbed
+    .split(/\r?\n/)
+    .map((l) =>
+      l
+        .split("\t")
+        .map((piece) => {
+          const at = piece.indexOf("\u0001");
+          return at < 0
+            ? { x: 0, text: piece.trim() }
+            : { x: Number(piece.slice(0, at)) || 0, text: piece.slice(at + 1).trim() };
+        })
+        .filter((c) => c.text !== ""),
+    )
+    .filter((row) => row.length > 0);
+  return { text, lines, cells, balebook: lines.some((l) => BRAND_LINE_RE.test(l)) };
+}
+
+/* ----------------------- tables this app printed ------------------------ */
+
+export interface OwnTableRow {
+  name: string;
+  /** The first count column: quantity, count or wanted. */
+  qty: number;
+  /** A request list's supplied column, when there is one. */
+  supplied: number | null;
+  perBag: number;
+  /** Text printed under the name, such as a request line's note. */
+  note: string;
+}
+
+const MONEY_CELL_RE = /^Rs\s*[\d,]+(?:\.\d+)?$/;
+const COUNT_CELL_RE = /^\d+$/;
+
+/**
+ * Read the table of a document this app printed, column by column.
+ *
+ * The header row says what each column is and where it starts across the page
+ * ("Item Name | Quantity | Per Bag | Total", "Item | Wanted | Supplied | ..."),
+ * so every piece of text on a row belongs to the column it sits under. A name
+ * the PDF engine handed over in several pieces ("3/4", "Ladies Jeans") is put
+ * back together, and a figure is never prised off the end of a name - which is
+ * what reading "Anorak #29" as one string has to guess at.
+ *
+ * A line with text only in the name column, between rows, is the note printed
+ * under the item above it.
+ */
+export function readOwnTable(cells: PdfCell[][]): {
+  rows: OwnTableRow[];
+  printedQty: number | null;
+} {
+  const rows: OwnTableRow[] = [];
+  let printedQty: number | null = null;
+  let columns: Array<{ label: string; x: number }> | null = null;
+  /** Name-column text waiting to find out whether it is a name or a note. */
+  const held: string[] = [];
+  const attachHeld = () => {
+    if (held.length > 0 && rows.length > 0) {
+      const last = rows[rows.length - 1];
+      last.note = [last.note, ...held].filter((t) => t !== "").join(" ");
+    }
+    held.length = 0;
+  };
+
+  /**
+   * Which column a piece of text sits in.
+   *
+   * Names are left-aligned under "Item", so text that starts there is the name. Figures are
+   * right-aligned, which means a single "9" starts well to the right of a "12"
+   * in the same column - so a figure is matched on where it ENDS, against where
+   * each heading ends. Widths are estimated from the character count at the
+   * size these tables print at, which is plenty to tell columns 50pt apart.
+   */
+  const CHAR = 5;
+  const columnOf = (piece: PdfCell): number => {
+    if (!columns) return -1;
+    // Anything starting well inside the name column is part of the name - a
+    // name is one left-aligned run however long it is. Everything further
+    // right is a figure, or a "-" standing in for a price not agreed yet.
+    if (columns.length < 2 || piece.x < columns[1].x - 40) return 0;
+    const end = piece.x + piece.text.length * CHAR;
+    let best = 1;
+    let bestGap = Infinity;
+    for (let i = 1; i < columns.length; i += 1) {
+      const headingEnd = columns[i].x + columns[i].label.length * CHAR;
+      const gap = Math.abs(headingEnd - end);
+      if (gap < bestGap) {
+        best = i;
+        bestGap = gap;
+      }
+    }
+    return best;
+  };
+
+  for (const line of cells) {
+    const joined = line.map((c) => c.text).join(" ");
+    if (BRAND_LINE_RE.test(joined.replace(/\s+/g, " ").trim()) || BRAND_LINE_RE.test(line[0]?.text ?? "")) {
+      columns = null;
+      continue;
+    }
+    if (/^item(\s*name)?$/i.test(line[0].text) && line.length >= 2) {
+      columns = line.map((c) => ({ label: c.text.toLowerCase(), x: c.x }));
+      continue;
+    }
+    if (!columns) continue;
+
+    const byColumn: string[] = columns.map(() => "");
+    for (const piece of line) {
+      const col = columnOf(piece);
+      byColumn[col] = byColumn[col] ? `${byColumn[col]} ${piece.text}` : piece.text;
+    }
+    const name = byColumn[0].replace(/\s+/g, " ").trim();
+
+    if (/^total$/i.test(name)) {
+      attachHeld();
+      const n = byColumn.slice(1).find((c) => COUNT_CELL_RE.test(c.trim()));
+      if (n !== undefined) printedQty = Number(n.trim());
+      columns = null;
+      continue;
+    }
+    if (/^page \d+ of \d+$/i.test(joined) || /^balebook/i.test(joined)) continue;
+
+    const at = (label: string) => columns!.findIndex((c) => c.label === label);
+    const qtyAt = [at("quantity"), at("count"), at("wanted"), 1].find((i) => i >= 1)!;
+    const qtyText = (byColumn[qtyAt] ?? "").trim();
+    if (!COUNT_CELL_RE.test(qtyText)) {
+      // Text only in the name column. Either the name of an item whose
+      // figures are printed lower down (it has a note under it, so the row is
+      // taller), or a note belonging to the row above. Held until the next
+      // line says which.
+      const onlyName = byColumn.slice(1).every((c) => c.trim() === "");
+      if (onlyName && name !== "") held.push(name);
+      continue;
+    }
+    const suppliedAt = at("supplied");
+    const perBagAt = at("per bag");
+    const suppliedText = suppliedAt >= 0 ? (byColumn[suppliedAt] ?? "").trim() : "";
+    const moneyText = perBagAt >= 0 ? (byColumn[perBagAt] ?? "").trim() : "";
+    let rowName = name;
+    let note = "";
+    if (rowName === "") {
+      // Figures with no name beside them: the name and its note came first.
+      rowName = held.shift() ?? "";
+      note = held.join(" ");
+      held.length = 0;
+    } else {
+      attachHeld();
+    }
+    if (rowName === "") continue;
+    rows.push({
+      name: rowName,
+      qty: Number(qtyText),
+      supplied: COUNT_CELL_RE.test(suppliedText) ? Number(suppliedText) : null,
+      perBag: MONEY_CELL_RE.test(moneyText) ? parseMoney(moneyText) : 0,
+      note,
+    });
+  }
+  attachHeld();
+  return { rows, printedQty };
+}
+
+export async function parseOrderPdf(buffer: Buffer): Promise<ParsedOrder> {
+  return parseOrderText(await readPdfText(buffer));
+}
+
+/** The column header of a table this app printed: "Item NameQuantity", "ItemCount", ... */
+const OWN_TABLE_HEADER_RE = /^item\s*(name)?\s*(quantity|count|wanted)/i;
+
+/**
+ * Only the lines inside the table of a document this app printed.
+ *
+ * Everything above the column header - the heading, the container line, a
+ * "Generated 01 Oct 2026" subtitle - is furniture, and several of those end in a
+ * digit, which the plain-list reading would take for a quantity. The header and
+ * wordmark reprint on every page, so the window reopens on each one.
+ */
+export function tableLines(lines: string[]): string[] {
+  const out: string[] = [];
+  let inTable = false;
+  for (const line of lines) {
+    if (BRAND_LINE_RE.test(line)) {
+      inTable = false;
+      continue;
+    }
+    if (OWN_TABLE_HEADER_RE.test(line)) {
+      inTable = true;
+      continue;
+    }
+    if (inTable) out.push(line);
+  }
+  return out;
+}
+
+/**
+ * Read an order out of a PDF's text.
+ *
+ * Supplier sheets go through exactly the rules they always have. The only
+ * difference for a document this app printed is in the plain-list reading
+ * below: its heading is excluded from the items, because a heading such as
+ * "Sri Lanka Order 03" ends in a digit and would otherwise be read as an item
+ * with 3 bags - which also throws off the printed total that names ending in a
+ * digit rely on.
+ */
+export function parseOrderText(pdf: PdfText): ParsedOrder {
+  const { text } = pdf;
+  const rawLines = pdf.lines;
+
+  // A document this app printed is read by its columns. Supplier files never
+  // take this path: they do not carry the wordmark.
+  if (pdf.balebook) {
+    const own = readOwnTable(pdf.cells);
+    if (own.rows.length > 0) {
+      const title =
+        rawLines.find((l) => !isNoiseLine(l) && !OWN_TABLE_HEADER_RE.test(l)) ?? "Order";
+      const items = own.rows
+        .filter((r) => r.qty > 0)
+        .map((r) => ({ name: r.name, qty: r.qty, perBag: r.perBag }));
+      const totalQty = items.reduce((s, i) => s + i.qty, 0);
+      return {
+        title,
+        items,
+        totalQty,
+        computedTotal: items.reduce((s, i) => s + i.qty * i.perBag, 0),
+        printedTotal: null,
+        totalsMatch: own.printedQty === null || own.printedQty === totalQty,
+      };
+    }
+  }
 
   const items: OrderItem[] = [];
   let title = "";
@@ -531,7 +818,8 @@ export async function parseOrderPdf(buffer: Buffer): Promise<ParsedOrder> {
   // No priced rows: this is probably a plain list of what someone wants, so
   // read it as names and quantities instead.
   if (items.length === 0) {
-    const list = parseQuantityList(rawLines);
+    const listLines = pdf.balebook ? tableLines(rawLines) : rawLines;
+    const list = parseQuantityList(listLines);
     if (list.items.length > 0) {
       const listQty = list.items.reduce((s, i) => s + i.qty, 0);
       return {
@@ -569,4 +857,69 @@ export async function parseOrderPdf(buffer: Buffer): Promise<ParsedOrder> {
     printedTotal,
     totalsMatch,
   };
+}
+
+/**
+ * The lines of a request list this app printed, with what was supplied.
+ *
+ * The ordinary reading only needs what was wanted, so it drops the supplied
+ * count; a restore needs both, or every delivery recorded so far is lost.
+ */
+export function readRequestRows(
+  lines: string[],
+): Array<{ name: string; qty: number; supplied: number; perBag: number }> {
+  const out: Array<{ name: string; qty: number; supplied: number; perBag: number }> = [];
+  for (const line of lines) {
+    const match = line.match(ROW_RE);
+    if (!match) continue;
+    const perBag = parseMoney(match[2]);
+    const total = parseMoney(match[3]);
+    const prefix = match[1].trim();
+    if (perBag > 0) {
+      const wanted = Math.round(total / perBag);
+      if (wanted <= 0 || Math.abs(wanted * perBag - total) >= 1) continue;
+      const row = splitRequestRow(prefix, wanted);
+      if (row) out.push({ ...row, perBag });
+      continue;
+    }
+    // No price agreed yet, so the money cannot say how many were wanted. The
+    // three counts still constrain each other - to go is wanted less supplied -
+    // which is enough to find them in the run of digits.
+    const row = splitUnpricedRequestRow(prefix);
+    if (row) out.push({ ...row, perBag: 0 });
+  }
+  return out;
+}
+
+function splitUnpricedRequestRow(
+  prefix: string,
+): { name: string; qty: number; supplied: number } | null {
+  const digits = prefix.match(/\d+$/)?.[0] ?? "";
+  if (digits.length < 3 || digits.length > 21) return null;
+  const okPart = (part: string) => part === "0" || !part.startsWith("0");
+
+  let best: { name: string; qty: number; supplied: number; length: number } | null =
+    null;
+  for (let start = 0; start <= digits.length - 3; start += 1) {
+    const run = digits.slice(start);
+    for (let a = 1; a < run.length - 1; a += 1) {
+      for (let b = a + 1; b < run.length; b += 1) {
+        const [w, s, g] = [run.slice(0, a), run.slice(a, b), run.slice(b)];
+        if (!okPart(w) || !okPart(s) || !okPart(g)) continue;
+        const wanted = Number(w);
+        const supplied = Number(s);
+        if (wanted <= 0 || supplied > wanted || Number(g) !== wanted - supplied) continue;
+        const name = prefix.slice(0, prefix.length - run.length).trim();
+        if (name === "") continue;
+        const better =
+          best === null ||
+          run.length > best.length ||
+          (run.length === best.length && /\d$/.test(best.name) && !/\d$/.test(name));
+        if (better) best = { name, qty: wanted, supplied, length: run.length };
+      }
+    }
+  }
+  return best === null
+    ? null
+    : { name: best.name, qty: best.qty, supplied: best.supplied };
 }

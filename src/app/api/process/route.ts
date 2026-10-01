@@ -1,7 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
-import { parseOrderPdf, PdfReadError } from "@/lib/parseOrder";
-import { parseCsvOrder, parseXlsxOrder } from "@/lib/parseTabular";
-import type { ParsedOrder } from "@/lib/types";
+import { parseOrderText, PdfReadError, readPdfText } from "@/lib/parseOrder";
+import {
+  parseCsv,
+  parseCsvOrder,
+  parseXlsxOrder,
+  xlsxToGrids,
+} from "@/lib/parseTabular";
+import {
+  recogniseCsv,
+  recogniseGrids,
+  recognisePdf,
+  type Recognised,
+} from "@/lib/restore";
+import { wrongPageMessage } from "@/lib/restoreTypes";
+import type { OrderItem, ParsedOrder } from "@/lib/types";
+
+/** The same order with its lines replaced, and its totals worked out again. */
+function withItems(parsed: ParsedOrder, items: OrderItem[]): ParsedOrder {
+  const totalQty = items.reduce((s, i) => s + i.qty, 0);
+  const computedTotal = items.reduce((s, i) => s + i.qty * i.perBag, 0);
+  return {
+    ...parsed,
+    items,
+    totalQty,
+    computedTotal,
+    printedTotal: null,
+    totalsMatch: true,
+  };
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -59,13 +85,36 @@ export async function POST(req: NextRequest) {
     const buffer = Buffer.from(await file.arrayBuffer());
     const fallbackTitle = titleFromFilename(file.name);
 
+    // Which page sent it, so a file of ours that belongs elsewhere can be named
+    // rather than rejected as unreadable.
+    const page = typeof form.get("for") === "string" ? String(form.get("for")) : "";
+
     let parsed: ParsedOrder;
+    let recognised: Recognised | null = null;
     if (kind === "pdf") {
-      parsed = await parseOrderPdf(buffer);
+      const pdf = await readPdfText(buffer);
+      parsed = parseOrderText(pdf);
+      recognised = recognisePdf(pdf, parsed);
     } else if (kind === "csv") {
-      parsed = parseCsvOrder(buffer.toString("utf8"), fallbackTitle);
+      const text = buffer.toString("utf8");
+      parsed = parseCsvOrder(text, fallbackTitle);
+      recognised = recogniseCsv(parseCsv(text));
     } else {
       parsed = await parseXlsxOrder(buffer, fallbackTitle);
+      recognised = recogniseGrids(await xlsxToGrids(buffer));
+    }
+
+    // A file this app generated. Supplier files never get here, so the order
+    // reading above is exactly what it always was for them.
+    if (recognised) {
+      if (recognised.items) parsed = withItems(parsed, recognised.items);
+      if (parsed.items.length === 0) {
+        const elsewhere = page ? wrongPageMessage(recognised.restore, page) : "";
+        if (elsewhere) {
+          return NextResponse.json({ error: elsewhere }, { status: 422 });
+        }
+      }
+      return NextResponse.json({ ...parsed, restore: recognised.restore });
     }
 
     if (parsed.items.length === 0) {

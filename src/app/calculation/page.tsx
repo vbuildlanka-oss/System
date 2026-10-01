@@ -9,6 +9,7 @@ import {
   EyeOff,
   Loader2,
   RotateCcw,
+  Search,
   Sheet as SheetIcon,
   Trash2,
   UploadCloud,
@@ -16,6 +17,7 @@ import {
   Zap,
 } from "lucide-react";
 import type { ParsedOrder } from "@/lib/types";
+import type { Restore } from "@/lib/restoreTypes";
 import { formatLKR, LIMITS } from "@/lib/types";
 import {
   calcTotals,
@@ -36,9 +38,14 @@ import {
   toggleFast,
   DEFAULT_MARKUP,
   type CalcDoc,
+  fromRestoredRows,
 } from "@/lib/calculation";
 import { shipmentFromFilename } from "@/lib/shipment";
 import { cn } from "@/lib/cn";
+import UndoToast, { useUndo } from "@/components/UndoToast";
+import { useFind } from "@/lib/useFind";
+import { searchList } from "@/lib/search";
+import { moveInColumn } from "@/lib/keyboard";
 
 /**
  * Working out the markup, item by item.
@@ -69,10 +76,18 @@ export default function CalculationPage() {
     setDoc(next);
     saveCalcDoc(next);
   }, []);
+  const undoer = useUndo<CalcDoc>(persist);
 
   const totals = useMemo(() => calcTotals(doc ?? emptyCalcDoc()), [doc]);
   const rows = doc?.rows ?? [];
   const fastCount = rows.filter((row) => row.fast).length;
+  const [rowSearch, setRowSearch] = useState("");
+  // Arriving from the quick-jump with something to find.
+  useFind(setRowSearch);
+  const shownRows = useMemo(
+    () => searchList(rows, rowSearch, (r) => [r.name]),
+    [rows, rowSearch],
+  );
 
   /* --------------------------------- upload -------------------------------- */
 
@@ -85,11 +100,34 @@ export default function CalculationPage() {
       try {
         const fd = new FormData();
         fd.append("file", f);
+        fd.append("for", "/calculation");
         const res = await fetch("/api/process", { method: "POST", body: fd });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Could not read that file.");
 
         const parsed = data as ParsedOrder;
+        const restore = (data as { restore?: Restore }).restore;
+
+        // A calculation this app exported: every markup, fast flag and hand-set
+        // figure comes back, not just the costs.
+        if (restore?.kind === "calculation") {
+          const restored = fromRestoredRows(
+            restore.rows,
+            restore.orderNumber || shipmentFromFilename(f.name).orderNumber,
+          );
+          if (restored.rows.length === 0) {
+            throw new Error("That calculation has no items in it.");
+          }
+          persist(restored);
+          setBaseInput(String(restored.baseMarkup));
+          const handSet = restored.rows.filter((r) => r.overridden).length;
+          setNotice(
+            `Restored the calculation: ${restored.rows.length} items on a base markup of ${formatLKR(restored.baseMarkup)}` +
+              (handSet > 0 ? `, ${handSet} with a markup of their own.` : "."),
+          );
+          return;
+        }
+
         const base = Number(baseInput);
         // The order number comes from the file name, the same way every other
         // page reads it, so the download can be matched back to its order.
@@ -260,7 +298,7 @@ export default function CalculationPage() {
       <input
         ref={inputRef}
         type="file"
-        accept=".pdf,.csv,.xlsx,application/pdf,text/csv"
+        accept=".pdf,.csv,.xlsx,application/pdf,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0];
@@ -409,7 +447,11 @@ export default function CalculationPage() {
                 hand. Changing the figure above leaves{" "}
                 {totals.overridden === 1 ? "it" : "them"} alone.
                 <button
-                  onClick={() => doc && persist(resetAllMarkups(doc))}
+                  onClick={() => {
+                    if (!doc) return;
+                    undoer.remember(doc, "Every markup put back on the base figure");
+                    persist(resetAllMarkups(doc));
+                  }}
                   className="inline-flex items-center gap-1 font-medium underline"
                 >
                   <RotateCcw className="h-3 w-3" />
@@ -419,6 +461,31 @@ export default function CalculationPage() {
             )}
 
             {/* The list */}
+            <div className="flex flex-wrap items-center gap-2 border-b border-gray-100 px-4 py-2">
+              <div className="relative min-w-[12rem] flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <input
+                  value={rowSearch}
+                  onChange={(e) => setRowSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setRowSearch("");
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      document
+                        .querySelector<HTMLInputElement>('[data-col="markup"]')
+                        ?.focus();
+                    }
+                  }}
+                  placeholder="Find an item, then Enter to set its markup"
+                  className="w-full rounded-lg border border-gray-300 py-1.5 pl-9 pr-3 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                />
+              </div>
+              {rowSearch.trim() !== "" && (
+                <span className="text-xs text-gray-500">
+                  {shownRows.length} of {rows.length}
+                </span>
+              )}
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[880px] text-left text-sm">
                 <thead className="border-b border-gray-100 bg-gray-50/70 text-xs uppercase tracking-wide text-gray-500">
@@ -440,7 +507,7 @@ export default function CalculationPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {rows.map((row) => (
+                  {shownRows.map((row) => (
                     <tr
                       key={row.id}
                       className={cn(
@@ -463,6 +530,9 @@ export default function CalculationPage() {
                             value={row.markup}
                             type="number"
                             min="0"
+                            data-col="markup"
+                            onKeyDown={moveInColumn}
+                            aria-label={`Markup per bag for ${row.name}`}
                             onChange={(e) =>
                               doc &&
                               persist(
@@ -516,7 +586,11 @@ export default function CalculationPage() {
                       <td className="px-2 py-2 text-right">
                         <button
                           onClick={() =>
-                            doc && persist(removeCalcRow(doc, row.id))
+                            {
+                              if (!doc) return;
+                              undoer.remember(doc, `${row.name} removed`);
+                              persist(removeCalcRow(doc, row.id));
+                            }
                           }
                           title="Take this item out"
                           className="rounded-md p-1 text-gray-400 transition hover:bg-red-50 hover:text-red-600"
@@ -609,6 +683,7 @@ export default function CalculationPage() {
           </p>
         </>
       )}
+      <UndoToast undo={undoer} />
     </main>
   );
 }

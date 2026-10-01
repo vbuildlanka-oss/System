@@ -26,6 +26,7 @@ import { readLocal, writeLocal } from "./storage";
 import { clampNumber, LIMITS } from "./types";
 import { sanitizeLine } from "./buyer";
 import { normalizeItemKey } from "./stockpile";
+import { ABBREVIATION_RANK, matchRank, normalizeSearch } from "./search";
 
 export const COUNT_KEY = "balebook.bagCount.v1";
 export const COUNT_VERSION = 1;
@@ -233,25 +234,39 @@ export function isCountComplete(doc: CountDoc): boolean {
  * fourth" is the difference between counting and hunting.
  */
 export function searchRows(doc: CountDoc, query: string): CountRow[] {
-  const needle = normalizeItemKey(query);
-  if (needle === "") return doc.rows;
-
-  const scored: Array<{ row: CountRow; rank: number }> = [];
-  for (const row of doc.rows) {
-    const key = normalizeItemKey(row.name);
-    if (key === needle) scored.push({ row, rank: 0 });
-    else if (key.startsWith(needle)) scored.push({ row, rank: 1 });
-    else if (key.includes(needle)) scored.push({ row, rank: 2 });
-  }
-  return scored
-    .sort((a, b) => a.rank - b.rank || a.row.name.localeCompare(b.row.name))
-    .map((entry) => entry.row);
+  return rankedRows(doc, query).map((entry) => entry.row);
 }
 
-/** The row Enter should tally, or null when the search is ambiguous or empty. */
+/**
+ * Rows ranked against the search, best first. Uses the shared matcher, so word
+ * order, a missing "#" and short forms such as "blk" for "Black" all still find
+ * the item. Ties are broken alphabetically, so the list does not jump about.
+ */
+function rankedRows(doc: CountDoc, query: string): Array<{ row: CountRow; rank: number }> {
+  if (normalizeSearch(query) === "") return doc.rows.map((row) => ({ row, rank: 0 }));
+  const scored: Array<{ row: CountRow; rank: number }> = [];
+  for (const row of doc.rows) {
+    const rank = matchRank(query, row.name);
+    if (rank !== null) scored.push({ row, rank });
+  }
+  return scored.sort((a, b) => a.rank - b.rank || a.row.name.localeCompare(b.row.name));
+}
+
+/**
+ * The row Enter should tally, or null when the search is empty or too loose.
+ *
+ * Enter adds a bag without anyone looking, so a guess is not good enough. When
+ * the best the search can do is an abbreviation ("blk"), it only counts if that
+ * abbreviation fits exactly one item; otherwise nothing is tallied and the list
+ * is left showing the candidates to tap.
+ */
 export function bestMatch(doc: CountDoc, query: string): CountRow | null {
-  if (normalizeItemKey(query) === "") return null;
-  return searchRows(doc, query)[0] ?? null;
+  if (normalizeSearch(query) === "") return null;
+  const ranked = rankedRows(doc, query);
+  const best = ranked[0];
+  if (!best) return null;
+  if (best.rank >= ABBREVIATION_RANK && ranked.length > 1) return null;
+  return best.row;
 }
 
 /* -------------------------------- counting -------------------------------- */
@@ -343,6 +358,79 @@ export function addItem(doc: CountDoc, name: string): AddItemResult {
     doc: touch(doc, { rows: [...doc.rows, row] }),
     row,
     existed: false,
+  };
+}
+
+export interface RestoreCountResult {
+  doc: CountDoc;
+  /** Rows on the open list that took a count from the file. */
+  matched: number;
+  /** Items in the file that were not on the list, added as found on the floor. */
+  added: number;
+  /** True when there was no list open to compare against. */
+  withoutList: boolean;
+}
+
+/**
+ * Put a count sheet this app exported back onto the page.
+ *
+ * With a list open, each count lands on its own row (matched on the normalised
+ * name, so "Anorak 2" finds "Anorak #2") and the expected figures stay as the
+ * list says - which is the useful case: load the list, load yesterday's count,
+ * carry on. An item the file lists as never counted stays never counted.
+ *
+ * With nothing open, the rows come in as found on the floor with nothing
+ * expected. The sheet deliberately never carried the expected figures, so
+ * inventing them would claim every item matched.
+ */
+export function restoreCounts(
+  doc: CountDoc,
+  rows: Array<{ name: string; counted: number | null }>,
+  shipment: { orderNumber: string; containerId: string },
+): RestoreCountResult {
+  const withoutList = doc.rows.length === 0;
+  const next: CountRow[] = doc.rows.map((row) => ({ ...row }));
+  let matched = 0;
+  let added = 0;
+
+  for (const entry of rows) {
+    const name = sanitizeLine(entry.name, LIMITS.itemName);
+    if (name === "") continue;
+    const key = normalizeItemKey(name);
+    const counted =
+      entry.counted === null ? null : Math.floor(clampNumber(entry.counted, LIMITS.qty));
+    const existing = next.find((row) => normalizeItemKey(row.name) === key);
+    if (existing) {
+      if (counted !== null) {
+        existing.counted = counted;
+        existing.touched = true;
+        matched += 1;
+      }
+      continue;
+    }
+    if (next.length >= MAX_ROWS) continue;
+    next.push(
+      createCountRow({
+        name,
+        counted: counted ?? 0,
+        touched: counted !== null,
+        added: true,
+      }),
+    );
+    added += 1;
+  }
+
+  return {
+    doc: touch(doc, {
+      rows: next,
+      orderNumber:
+        doc.orderNumber || sanitizeLine(shipment.orderNumber, LIMITS.title),
+      containerId:
+        doc.containerId || sanitizeLine(shipment.containerId, CONTAINER_LABEL_MAX),
+    }),
+    matched,
+    added,
+    withoutList,
   };
 }
 
