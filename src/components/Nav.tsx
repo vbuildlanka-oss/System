@@ -213,7 +213,7 @@ export default function Nav() {
               href="/"
               className="text-xl font-bold tracking-tight text-brand-600 sm:text-2xl"
             >
-              BaleBook
+              MDN ERP
             </Link>
             {/* On a phone the groups collapse, so the page name is the only
                 thing telling you where you are. */}

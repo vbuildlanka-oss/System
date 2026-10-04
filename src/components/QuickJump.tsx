@@ -179,11 +179,12 @@ export function gather(query: string, pages: JumpPage[]): Result[] {
           id: `person:${row.id}`,
           kind: "person",
           title: row.name,
-          detail: "On the payroll",
+          detail: row.position ? `On the payroll · ${row.position}` : "On the payroll",
           href: "/payroll",
           q: row.name,
         },
         row.name,
+        row.position,
         row.tin,
       );
     }

@@ -8,7 +8,7 @@
  * a cost, a payroll row is not an order line - and only for files that carry
  * something nobody else prints:
  *
- *   PDF   the BALEBOOK wordmark, plus the heading or column layout of one of
+ *   PDF   the MDN ERP wordmark (BALEBOOK on files printed before the rename), plus the heading or column layout of one of
  *         our documents
  *   XLSX  our exact sheet names and column headings
  *   CSV   our exact column headings
@@ -323,11 +323,18 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/** A payroll month sheet's header: Name first, with TIN and Gross Salary in it. */
+function isPayrollHeader(row: Cell[] | undefined): boolean {
+  if (!row || fold(row[0]) !== "name") return false;
+  const texts = row.map(fold);
+  return texts.includes("tin") && texts.includes("gross salary");
+}
+
 function readPayroll(grids: SheetGrid[]): RestoredPayroll | null {
   const monthSheets = grids.filter(
     (g) =>
       monthKeyFromSheet(g.name) !== "" &&
-      startsWithHeadings(g.rows[1], ["name", "tin", "gross salary"]),
+      isPayrollHeader(g.rows[1]),
   );
   if (monthSheets.length === 0) return null;
 
@@ -351,6 +358,11 @@ function readPayroll(grids: SheetGrid[]): RestoredPayroll | null {
   for (const sheet of monthSheets) {
     const header = sheet.rows[1].map((c) => cellText(c));
     const find = (test: (h: string) => boolean) => header.findIndex(test);
+    // Found by heading, not position: workbooks made before Position was added
+    // have TIN in the second column, and those must still restore.
+    const positionAt = find((h) => h === "Position");
+    const tinAt = find((h) => h === "TIN");
+    const grossAt = find((h) => h === "Gross Salary");
     const earnings = find((h) => h === "Total Earnings");
     const epfEe = find((h) => /^EPF .*\(employee\)$/i.test(h));
     const other = find((h) => h === "Other Deductions");
@@ -373,8 +385,8 @@ function readPayroll(grids: SheetGrid[]): RestoredPayroll | null {
     if (!rates) rates = used;
 
     const allowanceCols = header
-      .slice(3, earnings)
-      .map((label, k) => ({ label, col: 3 + k }))
+      .slice(grossAt + 1, earnings)
+      .map((label, k) => ({ label, col: grossAt + 1 + k }))
       .filter((c) => c.label !== "");
     const deductionCols = header
       .slice(other + 1, totalDed)
@@ -394,7 +406,7 @@ function readPayroll(grids: SheetGrid[]): RestoredPayroll | null {
     for (const row of sheet.rows.slice(2)) {
       const name = cellText(row[0]);
       if (/^total\b/i.test(name)) break;
-      const gross = num(row[2]);
+      const gross = num(row[grossAt]);
       if (name === "" && gross === 0) continue;
 
       const extras: Record<string, number> = {};
@@ -411,7 +423,8 @@ function readPayroll(grids: SheetGrid[]): RestoredPayroll | null {
       };
       rows.push({
         name,
-        tin: cellText(row[1]),
+        position: positionAt >= 0 ? cellText(row[positionAt]) : "",
+        tin: cellText(row[tinAt]),
         gross,
         otherDeductions: num(row[other]),
         extras,

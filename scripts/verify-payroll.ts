@@ -729,8 +729,9 @@ async function main() {
     const ws = wb.getWorksheet("August 2026")!;
     const header = (ws.getRow(2).values as unknown[]).slice(1) as string[];
     check(header[0] === "Name", "Name is the first column");
-    check(header[1] === "TIN", "then TIN");
-    check(header[2] === "Gross Salary", "then Gross Salary");
+    check(header[1] === "Position", "then Position");
+    check(header[2] === "TIN", "then TIN");
+    check(header[3] === "Gross Salary", "then Gross Salary");
     check(
       header.includes("EPF 8% (employee)"),
       `the employee's EPF names its rate (${header.join(" | ")})`,
@@ -1129,8 +1130,8 @@ async function main() {
     );
     const cleanedWs = cleanedWb.getWorksheet("August 2026")!;
     check(
-      cleanedWs.getCell("C3").value === 0,
-      `and a negative salary became zero (${cleanedWs.getCell("C3").value})`,
+      cleanedWs.getCell("D3").value === 0,
+      `and a negative salary became zero (${cleanedWs.getCell("D3").value})`,
     );
   }
 

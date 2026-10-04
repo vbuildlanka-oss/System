@@ -287,7 +287,9 @@ const QTY_TOTAL_RE = /^Total\s*(\d+)$/i;
 function isNoiseLine(line: string): boolean {
   if (line.includes(":")) return true; // "Container Number: GAOU7441740"
   if (/page\s*\d+\s*of\s*\d+/i.test(line)) return true;
-  if (/^(balebook|item\s*name|quantity|total)\b/i.test(line)) return true;
+  if (/^(balebook|mdn\s*erp|item\s*name|quantity|total)\b/i.test(line)) return true;
+  // Our wordmark, whichever name it was printed under.
+  if (BRAND_LINE_RE.test(line)) return true;
   // The brand is rendered with wide letter spacing, arriving as "B A L E ...".
   if (/^(?:[A-Za-z]\s){3,}[A-Za-z]\s*$/.test(line)) return true;
   return false;
@@ -501,13 +503,17 @@ function splitNameAndQty(
 }
 
 /**
- * The BALEBOOK wordmark at the top of every document this app prints.
+ * The wordmark at the top of every document this app prints.
  *
- * It is rendered with wide letter spacing and arrives as "B A L E B O O K" (or,
+ * It is rendered with wide letter spacing and arrives as "M D N   E R P" (or,
  * from some engines, run together). Uppercase and on a line of its own, so a
- * supplier sheet that merely mentions the word cannot match it.
+ * supplier sheet that merely mentions the name cannot match it.
+ *
+ * The app was called BaleBook before, and files printed then carry BALEBOOK.
+ * Both are recognised, so a download made under the old name still restores.
  */
-const BRAND_LINE_RE = /^B\s*A\s*L\s*E\s*B\s*O\s*O\s*K$/;
+const BRAND_LINE_RE =
+  /^(?:M\s*D\s*N\s*E\s*R\s*P|B\s*A\s*L\s*E\s*B\s*O\s*O\s*K)$/;
 
 /** True for the wordmark line this app prints, and nothing a supplier would. */
 export function isBalebookWordmark(line: string): boolean {
@@ -658,7 +664,7 @@ export function readOwnTable(cells: PdfCell[][]): {
       columns = null;
       continue;
     }
-    if (/^page \d+ of \d+$/i.test(joined) || /^balebook/i.test(joined)) continue;
+    if (/^page \d+ of \d+$/i.test(joined) || /^(balebook|mdn\s*erp)\b/i.test(joined)) continue;
 
     const at = (label: string) => columns!.findIndex((c) => c.label === label);
     const qtyAt = [at("quantity"), at("count"), at("wanted"), 1].find((i) => i >= 1)!;

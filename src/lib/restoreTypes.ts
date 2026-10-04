@@ -11,7 +11,7 @@
  * treating it as a fresh supplier order and throwing half of it away.
  *
  * Supplier files never produce a restore. Recognising one of ours depends on
- * things only this app prints: the BALEBOOK wordmark on a PDF, or the exact
+ * things only this app prints: the MDN ERP wordmark (BALEBOOK on files printed before the rename) on a PDF, or the exact
  * sheet names and column headings of its own workbooks and CSVs.
  */
 
@@ -55,6 +55,8 @@ export interface RestoredCalcRow {
 
 export interface RestoredPayrollRow {
   name: string;
+  /** "" for workbooks made before Position was a column. */
+  position: string;
   tin: string;
   gross: number;
   otherDeductions: number;
@@ -133,5 +135,5 @@ export function wrongPageMessage(restore: Restore | undefined, here: string): st
   if (!restore) return "";
   const home = RESTORE_HOME[restore.kind];
   if (home.href === here) return "";
-  return `That is ${home.what} from BaleBook. Upload it on the ${home.page} page to restore it.`;
+  return `That is ${home.what} from MDN ERP. Upload it on the ${home.page} page to restore it.`;
 }

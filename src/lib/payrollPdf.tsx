@@ -70,6 +70,7 @@ const styles = StyleSheet.create({
   whoBlock: { flexDirection: "column" },
   whoLabel: { fontSize: 7.5, color: "#6b7280", letterSpacing: 1 },
   whoValue: { fontSize: 12, fontFamily: "Helvetica-Bold", marginTop: 2 },
+  whoPosition: { fontSize: 9, color: "#4b5563", marginTop: 1 },
 
   sectionTitle: {
     fontSize: 8,
@@ -201,7 +202,7 @@ function PayslipPage({
   return (
     <Page size="A4" style={styles.page} wrap>
       <View style={styles.header} fixed>
-        <Text style={styles.brand}>BALEBOOK</Text>
+        <Text style={styles.brand}>MDN ERP</Text>
         <Text style={styles.title}>{doc.employer || "Payslip"}</Text>
         <Text style={styles.subtitle}>
           {doc.employer ? "Payslip for " : "For "}
@@ -214,6 +215,9 @@ function PayslipPage({
         <View style={styles.whoBlock}>
           <Text style={styles.whoLabel}>EMPLOYEE</Text>
           <Text style={styles.whoValue}>{row.name || "(unnamed)"}</Text>
+          {row.position !== "" && (
+            <Text style={styles.whoPosition}>{row.position}</Text>
+          )}
         </View>
         <View style={[styles.whoBlock, { alignItems: "flex-end" }]}>
           <Text style={styles.whoLabel}>TIN</Text>
@@ -290,7 +294,7 @@ function PayslipPage({
       {row.note !== "" && <Text style={styles.note}>Note: {row.note}</Text>}
 
       <View style={styles.footer} fixed>
-        <Text>BaleBook</Text>
+        <Text>MDN ERP</Text>
         <Text
           render={({ pageNumber, totalPages }) =>
             `Page ${pageNumber} of ${totalPages}`
@@ -314,9 +318,9 @@ export async function renderPayslipPdf(
 
   return renderToBuffer(
     <Document
-      author="BaleBook"
-      creator="BaleBook"
-      producer="BaleBook"
+      author="MDN ERP"
+      creator="MDN ERP"
+      producer="MDN ERP"
       title={payslipTitle(row, month)}
     >
       <PayslipPage row={row} month={month} fields={doc.fields} doc={doc} />
@@ -344,9 +348,9 @@ export async function renderPayslipsPdf(
 
   return renderToBuffer(
     <Document
-      author="BaleBook"
-      creator="BaleBook"
-      producer="BaleBook"
+      author="MDN ERP"
+      creator="MDN ERP"
+      producer="MDN ERP"
       title={`Payslips - ${monthLabel(month.month)}`}
     >
       {month.rows.map((row) => (

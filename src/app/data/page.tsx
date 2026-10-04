@@ -85,7 +85,7 @@ export default function DataPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `BaleBook backup ${new Date()
+    a.download = `MDN ERP backup ${new Date()
       .toISOString()
       .slice(0, 16)
       .replace("T", " ")
@@ -110,7 +110,7 @@ export default function DataPage() {
       const probe = parsed as { app?: string; data?: Record<string, string> };
       if (!parsed || probe.app !== "balebook-backup") {
         throw new Error(
-          "That is not a BaleBook backup. Use a file downloaded from this page.",
+          "That is not a MDN ERP backup. Use a file downloaded from this page.",
         );
       }
       const keys = Object.keys(probe.data ?? {}).length;
@@ -167,7 +167,7 @@ export default function DataPage() {
           Saved data
         </h1>
         <p className="mt-1 text-sm text-gray-600">
-          Everything BaleBook remembers is stored in this browser, and nowhere
+          Everything MDN ERP remembers is stored in this browser, and nowhere
           else. Choose what to delete, and take a backup first if you might want
           it back.
         </p>

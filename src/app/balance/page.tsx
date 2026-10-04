@@ -619,7 +619,7 @@ export default function BalancePage() {
         );
         setNotice(
           scope === "expenses"
-            ? "Expenses exported on their own - name, partner, container and amount, with no turnover or profit in the file."
+            ? "Expenses exported on their own - name, member, container and amount, with no turnover or profit in the file."
             : scope === "balances"
               ? "Balances exported on their own - what is left, the status and the position are all live formulas, and the file can be edited and uploaded back."
               : "Excel exported - 6 tabs, and every total is a live formula, so editing an amount updates the rest.",
@@ -655,7 +655,7 @@ export default function BalancePage() {
           Balance Sheet
         </h1>
         <p className="mt-2 max-w-2xl text-sm text-gray-500">
-          What each container brought in, what it cost, and which partner the
+          What each container brought in, what it cost, and which member the
           money belongs to.
         </p>
       </header>
@@ -1071,7 +1071,7 @@ export default function BalancePage() {
               htmlFor="ex-partner"
               className="mb-1 block text-xs font-medium text-gray-600"
             >
-              Partner
+              Member
             </label>
             <input
               id="ex-partner"
@@ -1081,7 +1081,7 @@ export default function BalancePage() {
               onKeyDown={(e) => {
                 if (e.key === "Enter") submitExpense();
               }}
-              placeholder="Partner name"
+              placeholder="Member name"
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
             />
           </div>
@@ -1145,7 +1145,7 @@ export default function BalancePage() {
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search expenses, partners or containers..."
+                placeholder="Search expenses, members or containers..."
                 className="w-full rounded-lg border border-gray-300 py-1.5 pl-9 pr-3 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
               />
             </div>
@@ -1163,7 +1163,7 @@ export default function BalancePage() {
                 <tr>
                   <th className="px-5 py-3 text-left font-semibold">Expense</th>
                   <th className="w-40 px-2 py-3 text-left font-semibold">
-                    Partner
+                    Member
                   </th>
                   <th className="w-36 px-2 py-3 text-left font-semibold">
                     Container
@@ -1673,7 +1673,7 @@ export default function BalancePage() {
         <section className="mt-6 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
           <h2 className="mb-3 flex items-center gap-2 font-semibold text-gray-900">
             <Users className="h-4 w-4 text-brand-600" />
-            Expenses by partner
+            Expenses by member
           </h2>
           <ul className="space-y-2">
             {partners.map((row) => (
@@ -1777,7 +1777,7 @@ export default function BalancePage() {
         <button
           onClick={() => exportExcel("expenses")}
           disabled={noExpenses || building !== null}
-          title="One tab of expense name, partner and amount - no turnover or profit in the file"
+          title="One tab of expense name, member and amount - no turnover or profit in the file"
           className="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-white px-4 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-50 disabled:opacity-40"
         >
           {building === "expenses" ? (
@@ -1806,7 +1806,7 @@ export default function BalancePage() {
         tab of what is still outstanding, with the status and the position worked
         out live.{" "}
         <span className="font-medium text-gray-500">Expenses only</span> gives one
-        tab of expense name, partner, container and amount - no turnover or profit
+        tab of expense name, member, container and amount - no turnover or profit
         in the file.{" "}
         <span className="font-medium text-gray-500">Export Excel</span> gives the
         whole sheet across 6 tabs. In all three, the typed figures are the only
@@ -1948,7 +1948,7 @@ function ImportPreview({
                 </>
               ) : (
                 <>
-                  <th className="px-3 py-2 font-medium">Partner</th>
+                  <th className="px-3 py-2 font-medium">Member</th>
                   <th className="px-3 py-2 font-medium">Container</th>
                   <th className="px-3 py-2 text-right font-medium">Amount</th>
                 </>

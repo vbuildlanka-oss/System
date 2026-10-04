@@ -547,7 +547,7 @@ export default function StockpilePage() {
       {pendingRestore && (
         <div className="mb-4 animate-fade-in rounded-xl border border-brand-200 bg-brand-50 px-4 py-3 text-sm text-brand-900">
           <p className="font-medium">
-            {pendingRestore.fileName} is a stockpile export from BaleBook -{" "}
+            {pendingRestore.fileName} is a stockpile export from MDN ERP -{" "}
             {pendingRestore.lots.reduce((n, l) => n + l.bags, 0)} bags across{" "}
             {new Set(pendingRestore.lots.map((l) => l.name.toLowerCase())).size} items.
           </p>

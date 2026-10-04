@@ -518,13 +518,13 @@ export function restoreStoredData(
   const result: RestoreResult = { restored: [], refused: [] };
 
   if (!file || typeof file !== "object") {
-    result.problem = "That file is not a BaleBook backup.";
+    result.problem = "That file is not a MDN ERP backup.";
     return result;
   }
   const backup = file as Partial<BackupFile>;
   if (backup.app !== "balebook-backup") {
     result.problem =
-      "That file is not a BaleBook backup. Use a file downloaded from this page.";
+      "That file is not a MDN ERP backup. Use a file downloaded from this page.";
     return result;
   }
   if (!backup.data || typeof backup.data !== "object") {
@@ -549,7 +549,7 @@ export function restoreStoredData(
       continue;
     }
     if (!OWNED_PREFIXES.some((p) => key.startsWith(p))) {
-      result.refused.push({ key, reason: "not a BaleBook key" });
+      result.refused.push({ key, reason: "not a MDN ERP key" });
       continue;
     }
     try {

@@ -62,7 +62,7 @@ export async function buildCalculationXlsx(doc: CalcDoc): Promise<Buffer> {
   const profitCol = `$G$${firstRow}:$G$${lastRow}`;
 
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "BaleBook";
+  workbook.creator = "MDN ERP";
   workbook.created = new Date();
   workbook.calcProperties.fullCalcOnLoad = true;
 

@@ -137,14 +137,14 @@ function CountDocument({ doc }: { doc: CountDoc }) {
 
   return (
     <Document
-      author="BaleBook"
-      creator="BaleBook"
-      producer="BaleBook"
+      author="MDN ERP"
+      creator="MDN ERP"
+      producer="MDN ERP"
       title={countPdfTitle(doc)}
     >
       <Page size="A4" style={styles.page} wrap>
         <View style={styles.header} fixed>
-          <Text style={styles.brand}>BALEBOOK</Text>
+          <Text style={styles.brand}>MDN ERP</Text>
           <Text style={styles.title}>{countPdfTitle(doc)}</Text>
           {doc.containerId.trim() !== "" ? (
             <Text style={styles.container}>
@@ -184,7 +184,7 @@ function CountDocument({ doc }: { doc: CountDoc }) {
         </Text>
 
         <View style={styles.footer} fixed>
-          <Text>BaleBook</Text>
+          <Text>MDN ERP</Text>
           <Text
             render={({ pageNumber, totalPages }) =>
               `Page ${pageNumber} of ${totalPages}`

@@ -201,7 +201,7 @@ export function parseExpenseGrid(
 
   if (cols.partner === -1) {
     out.problem =
-      "No Partner column was found. Every expense has to belong to a partner, so add a Partner column and upload the file again.";
+      "No Member column was found. Every expense has to belong to a member, so add a Member column and upload the file again.";
     return out;
   }
 
@@ -250,7 +250,7 @@ export function parseExpenseGrid(
       continue;
     }
     if (partner === "") {
-      skip("no partner, so it could not be attributed");
+      skip("no member, so it could not be attributed");
       continue;
     }
 

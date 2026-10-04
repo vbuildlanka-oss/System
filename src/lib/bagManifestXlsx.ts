@@ -40,7 +40,7 @@ export async function buildManifestXlsx(
   data: ManifestXlsxData,
 ): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "BaleBook";
+  workbook.creator = "MDN ERP";
   workbook.created = new Date();
   // Ask the spreadsheet app to recalculate when the file opens, so the Total
   // formula is authoritative rather than the cached value written below.

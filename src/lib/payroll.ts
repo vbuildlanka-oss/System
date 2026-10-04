@@ -40,6 +40,7 @@ export const MAX_FIELDS = 12;
 
 export const NAME_MAX = 80;
 export const TIN_MAX = 30;
+export const POSITION_MAX = 60;
 export const FIELD_LABEL_MAX = 40;
 export const NOTE_MAX = 160;
 export const EMPLOYER_MAX = 80;
@@ -92,6 +93,8 @@ export interface PayrollOverrides {
 export interface PayrollRow {
   id: string;
   name: string;
+  /** Job title, e.g. "Warehouse supervisor". Printed on the payslip. */
+  position: string;
   /** Taxpayer Identification Number. Printed on the payslip as given. */
   tin: string;
   /** Contractual monthly pay, and the base the EPF percentages apply to. */
@@ -157,6 +160,7 @@ export function money(value: number): number {
 
 export function createRow(input: {
   name?: unknown;
+  position?: unknown;
   tin?: unknown;
   gross?: unknown;
   otherDeductions?: unknown;
@@ -181,6 +185,8 @@ export function createRow(input: {
   return {
     id: uid("pr"),
     name: sanitizeLine(input.name, NAME_MAX),
+    // Absent on payrolls saved before the field existed, which reads as blank.
+    position: sanitizeLine(input.position, POSITION_MAX),
     tin: sanitizeLine(input.tin, TIN_MAX),
     gross: money(clampNumber(input.gross, LIMITS.money)),
     otherDeductions: money(clampNumber(input.otherDeductions, LIMITS.money)),
@@ -283,7 +289,7 @@ export interface AddMonthResult {
 /**
  * Open a month, carrying the staff forward.
  *
- * Names, TINs and gross pay come across, because those are the same in March as
+ * Names, positions, TINs and gross pay come across, because those are the same in March as
  * they were in February. Deductions and advances do not: those are findings about
  * one particular month, and carrying them would put last month's advance into
  * this month's payslip where nobody would notice it.
@@ -314,7 +320,7 @@ export function addMonth(doc: PayrollDoc, month: string): AddMonthResult {
     .sort((a, b) => b.month.localeCompare(a.month))[0];
 
   const rows: PayrollRow[] = (earlier?.rows ?? []).map((row) =>
-    createRow({ name: row.name, tin: row.tin, gross: row.gross }),
+    createRow({ name: row.name, position: row.position, tin: row.tin, gross: row.gross }),
   );
 
   const fresh: PayrollMonth = {
@@ -370,7 +376,7 @@ export function setMonthNote(
 export function addRow(
   doc: PayrollDoc,
   monthId: string,
-  input: { name?: string; tin?: string; gross?: number } = {},
+  input: { name?: string; position?: string; tin?: string; gross?: number } = {},
 ): PayrollDoc {
   const month = findMonth(doc, monthId);
   if (!month || month.rows.length >= MAX_ROWS) return doc;
@@ -407,11 +413,17 @@ export function setRowText(
   doc: PayrollDoc,
   monthId: string,
   rowId: string,
-  field: "name" | "tin" | "note",
+  field: "name" | "position" | "tin" | "note",
   value: string,
 ): PayrollDoc {
   const max =
-    field === "name" ? NAME_MAX : field === "tin" ? TIN_MAX : NOTE_MAX;
+    field === "name"
+      ? NAME_MAX
+      : field === "position"
+        ? POSITION_MAX
+        : field === "tin"
+          ? TIN_MAX
+          : NOTE_MAX;
   return mapRow(doc, monthId, rowId, (r) => ({
     ...r,
     [field]: sanitizeLine(value, max),
@@ -768,6 +780,7 @@ export interface RestoredPayrollInput {
     paidOn: string;
     rows: Array<{
       name: string;
+      position?: string;
       tin: string;
       gross: number;
       otherDeductions: number;

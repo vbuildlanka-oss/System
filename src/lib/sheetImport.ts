@@ -129,6 +129,7 @@ export const PARTY_HEADINGS = new Set([
   "paid to",
   "person",
   "member",
+  "member name",
   "shareholder",
   "who",
   "supplier",

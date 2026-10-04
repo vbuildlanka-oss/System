@@ -85,7 +85,7 @@ export async function buildExpensesXlsx(sheet: BalanceSheet): Promise<Buffer> {
   const partnerRange = `$B$${firstRow}:$B$${lastRow}`;
 
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "BaleBook";
+  workbook.creator = "MDN ERP";
   workbook.created = new Date();
   workbook.calcProperties.fullCalcOnLoad = true;
 
@@ -108,7 +108,7 @@ export async function buildExpensesXlsx(sheet: BalanceSheet): Promise<Buffer> {
   stamp.font = { italic: true, size: 8, color: { argb: "FF9CA3AF" } };
   stamp.alignment = { horizontal: "right", vertical: "middle" };
 
-  headerRow(ws, 2, ["Expense", "Partner", "Container", "Amount"], 3);
+  headerRow(ws, 2, ["Expense", "Member", "Container", "Amount"], 3);
 
   expenses.forEach((expense, i) => {
     const row = ws.getRow(firstRow + i);
@@ -133,7 +133,7 @@ export async function buildExpensesXlsx(sheet: BalanceSheet): Promise<Buffer> {
 
   /* --------------------------- per partner block --------------------------- */
 
-  headerRow(ws, partnerHeaderRow, ["Partner", "Total", "Entries"], 1);
+  headerRow(ws, partnerHeaderRow, ["Member", "Total", "Entries"], 1);
 
   partners.forEach((entry, i) => {
     const r = partnerFirstRow + i;
@@ -176,7 +176,7 @@ export async function buildExpensesXlsx(sheet: BalanceSheet): Promise<Buffer> {
     ws,
     partnerTotalRow + 2,
     `A${partnerTotalRow + 2}:D${partnerTotalRow + 2}`,
-    'Expenses only - no turnover, profit or margin. Amounts are typed in the Amount column; the Total and the per-partner figures below it are formulas over those rows, so editing an amount updates them. Add rows above the Total and this sheet can be uploaded back into the Balance Sheet page. Leave the container as "(general)" for an expense that belongs to no single container.',
+    'Expenses only - no turnover, profit or margin. Amounts are typed in the Amount column; the Total and the per-member figures below it are formulas over those rows, so editing an amount updates them. Add rows above the Total and this sheet can be uploaded back into the Balance Sheet page. Leave the container as "(general)" for an expense that belongs to no single container.',
   );
 
   if (count > 0) {

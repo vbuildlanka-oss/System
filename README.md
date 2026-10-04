@@ -1,4 +1,8 @@
-# BaleBook
+# MDN ERP
+
+*Formerly BaleBook.* Files printed or exported under the old name still
+restore: the old BALEBOOK wordmark is recognised alongside the new one. Saved
+data in the browser carries over untouched, as its storage keys did not change.
 
 Order sheets, bag manifests, sales, stockpile and payroll for a clothing import
 business. Everything runs on files, so there is no database to maintain.
@@ -59,7 +63,7 @@ Built for a warehouse floor, where hands are full and every tap counts.
 
 ### Every download is a backup
 
-Upload a file BaleBook made on the page that made it, and the page picks up
+Upload a file MDN ERP made on the page that made it, and the page picks up
 where it left off:
 
 | File | Comes back with |
@@ -76,7 +80,7 @@ where it left off:
 
 A buyer's price list is recognised and its prices are **not** taken as costs,
 since they already include the markup. Supplier files are read exactly as
-before: one of ours is only recognised by the BALEBOOK wordmark or the app's
+before: one of ours is only recognised by the MDN ERP wordmark or the app's
 own exact headings, and the suite checks the sample supplier PDFs still read
 as 85 items and 733 bags.
 
@@ -314,11 +318,11 @@ inventory.
 
 ## 6. Balance Sheet (`/balance`)
 
-What each container brought in, what it cost, and which partner the money
+What each container brought in, what it cost, and which member the money
 belongs to.
 
-- **Expenses** — an expense name, the **partner** it belongs to, and the amount.
-  The partner is required: an unattributed expense would make the per-partner
+- **Expenses** — an expense name, the **member** it belongs to, and the amount.
+  The member is required: an unattributed expense would make the per-member
   breakdown lie by omission.
 - **Profit by container** — record a **container ID** and its **turnover**, and
   each container's profit, margin and costs are worked out for you.
@@ -337,18 +341,18 @@ belongs to.
   its own labelled line.
 - **A container that has cost money but earned nothing yet is still listed**,
   showing the loss so far rather than hiding until the first sale.
-- **Expenses by partner** — totals, entry counts and each partner's share of all
+- **Expenses by member** — totals, entry counts and each member's share of all
   spending, as a bar.
-- **Edit in place** — every name, partner, container and amount is editable
-  directly in the table, and every figure above re-derives as you type. Partner
+- **Edit in place** — every name, member, container and amount is editable
+  directly in the table, and every figure above re-derives as you type. Member
   and container fields suggest what you have already used.
-- **Search** across expense names, partners and container IDs.
-- **Validation**: an entry needs a name, a partner and an amount above zero;
+- **Search** across expense names, members and container IDs.
+- **Validation**: an entry needs a name, a member and an amount above zero;
   container IDs are normalised to uppercase (`gaou 744174-0` → `GAOU7441740`) and
   a bad ISO 6346 check digit raises a warning without blocking you — it is a
   bookkeeping label, not an export.
 - **Balances to be paid** — a ledger of what is still outstanding, in both
-  directions: money you still owe a partner or supplier, and money a buyer still
+  directions: money you still owe a member or supplier, and money a buyer still
   owes you. Record the **total** and **how much has been paid**; what is left is
   worked out for you, never typed.
 
@@ -366,7 +370,7 @@ belongs to.
     `Total`/`Balance`/`Outstanding` column, plus any of `Paid`, `Due` or
     `Direction`. `Rs 150,000.00` and `1 250` both read as money, and dates are
     understood.
-  - **A sheet of expenses cannot be imported as debts.** "Partner" is a party and
+  - **A sheet of expenses cannot be imported as debts.** "Member" is a party and
     "Amount" is an amount, so an expenses sheet would otherwise satisfy a naive
     test and turn every expense into a debt. A balances sheet has to carry
     something only a balances sheet has, and if it does not, the reply says so.
@@ -387,14 +391,14 @@ belongs to.
   |---|---|
   | Summary | turnover, expenses split into attributed and overhead, net profit, margin, counts |
   | Profit by Container | turnover, cost, profit and margin per container, then a labelled overhead row and a net total |
-  | Expenses | one row per expense — date, name, partner, container, amount, note |
+  | Expenses | one row per expense — date, name, member, container, amount, note |
   | Turnover | one row per turnover entry |
-  | By Partner | spend, entry count and share for each partner |
+  | By Member | spend, entry count and share for each member |
   | Balances | what is outstanding — `Outstanding` is `Total - Paid`, live |
 
   Amounts are typed on the **Expenses** and **Turnover** tabs only. Everything
   else is `SUMIF`, `COUNTIF` and arithmetic over those two tabs, so changing an
-  amount in Excel re-derives the summary, both profit scopes and the partner
+  amount in Excel re-derives the summary, both profit scopes and the member
   breakdown. Re-tag an expense to a container in the spreadsheet and it moves out
   of overhead and into that container's profit on recalculation. No total can
   ever sit there disagreeing with the rows above it.
@@ -405,9 +409,9 @@ belongs to.
   Every formula also carries a cached answer, so totals are visible in Google
   Sheets, LibreOffice and mail preview panes that do not recalculate on open.
 - **Expenses-only export** — a second button giving a one-tab workbook of
-  **expense name, partner, container and amount**. It carries no turnover, profit
+  **expense name, member, container and amount**. It carries no turnover, profit
   or margin, so what the containers earned stays out of it. Rows are grouped so
-  each partner's expenses sit together, with a live total and a live per-partner
+  each member's expenses sit together, with a live total and a live per-member
   block below. Saved as `Expenses <date>.xlsx`, so it can never be mistaken for
   the full sheet.
 - **Expenses import** — **Import from Excel** on the Expenses section reads an
@@ -417,12 +421,12 @@ belongs to.
   Two rules run through the importer:
 
   - **Nothing is imported that is not clearly an expense.** The exported sheet has
-    a Total row and a per-partner block below the entries, and a naive reader
-    would add those back as expenses called "Total" and "Anton". The per-partner
+    a Total row and a per-member block below the entries, and a naive reader
+    would add those back as expenses called "Total" and "Anton". The per-member
     block ends the read; a Total row is stepped over, so a row typed *below* it is
     still found.
   - **Nothing is dropped silently.** Every row that is not imported is listed with
-    the reason — no name, no amount, no partner, a zero, a bracketed credit, or an
+    the reason — no name, no amount, no member, a zero, a bracketed credit, or an
     amount beyond the cap.
 
   Nothing is added until you accept it. The preview shows what will be added,
@@ -438,7 +442,7 @@ belongs to.
   found rather than failing on Summary. `(general)` comes back as no container, so
   overhead never acquires one on the way through.
 - **CSV export** — the same sheet as one flat file: both halves, then the
-  summary, per-container and per-partner blocks.
+  summary, per-container and per-member blocks.
 - **Storage**: one JSON document, autosaved in the browser and downloadable.
   Totals, profits and margins are always *calculated* from the entries, never
   stored, so a figure can never drift from the rows it came from.
@@ -564,15 +568,18 @@ company, while raising the employee's own EPF must move the wage.
 
 ### Working a month
 
-- **A month is opened, not created.** Names, TINs and gross pay come forward from
+- **A month is opened, not created.** Names, positions, TINs and gross pay come forward from
   the month before, because those are the same in March as they were in February.
   Deductions, advances and any figure typed in for one month do **not** — those are
   findings about a particular month, and carrying them would put February's advance
   into March's payslip where nobody would notice. Open a month you missed and it
   copies from the month *before it*, not from the latest one.
-- **The seven fields you asked for**, plus what the arithmetic needs to be honest:
-  Name, TIN, Gross Salary, EPF, ETF, Other Deductions, Net Salary — with EPF split
-  into the employee's and the employer's, since they are different money.
+- **The fields you asked for**, plus what the arithmetic needs to be honest:
+  Name, Position, TIN, Gross Salary, EPF, ETF, Other Deductions, Net Salary —
+  with EPF split into the employee's and the employer's, since they are
+  different money. Position carries forward month to month like the name, is
+  printed under the name on the payslip, and offers the titles already used as
+  you type. Payroll workbooks exported before Position existed still restore.
 - **Add your own columns.** PAYE, a transport allowance, a salary advance: each is
   either money **paid** or money **withheld**, which is all the arithmetic needs to
   know. A column becomes a column on every month and a line on every payslip, and
@@ -740,7 +747,7 @@ npx tsx scripts/verify-payroll.ts       # wages, EPF/ETF, payslip privacy, the m
 npx tsx scripts/verify-roundtrip.ts     # every export re-imports; search; quick-jump
 ```
 
-2,038 checks. The count-to-price suite renders a real count PDF, parses it back
+2,066 checks. The count-to-price suite renders a real count PDF, parses it back
 with the same code the upload path uses, and fails if a single item name or count
 comes out different — the two files are a contract, so the round trip is tested
 rather than assumed.

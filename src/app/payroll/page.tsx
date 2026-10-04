@@ -37,6 +37,7 @@ import {
   NAME_MAX,
   NOTE_MAX,
   overDeductedNames,
+  POSITION_MAX,
   payslipFilename,
   removeField,
   removeMonth,
@@ -148,7 +149,7 @@ export default function PayrollPage() {
           throw new Error(
             !res.ok && data.error
               ? data.error
-              : "That is not a payroll spreadsheet from BaleBook. Upload the monthly or yearly payroll workbook downloaded from this page.",
+              : "That is not a payroll spreadsheet from MDN ERP. Upload the monthly or yearly payroll workbook downloaded from this page.",
           );
         }
         const result = restorePayroll(doc, restore.payroll);
@@ -720,7 +721,7 @@ export default function PayrollPage() {
                         ?.focus();
                     }
                   }}
-                  placeholder="Find someone by name or TIN"
+                  placeholder="Find someone by name, position or TIN"
                   className="w-full rounded-lg border border-gray-300 py-1.5 pl-9 pr-3 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
                 />
               </div>
@@ -734,6 +735,7 @@ export default function PayrollPage() {
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
                   <th className="px-3 py-2 font-semibold">Name</th>
+                  <th className="px-3 py-2 font-semibold">Position</th>
                   <th className="px-3 py-2 font-semibold">TIN</th>
                   <th className="px-3 py-2 text-right font-semibold">Gross</th>
                   {allowances.map((f) => (
@@ -769,7 +771,7 @@ export default function PayrollPage() {
                 </tr>
               </thead>
               <tbody>
-                {searchList(month.rows, rowSearch, (r) => [r.name, r.tin, r.note]).map((row, i) => (
+                {searchList(month.rows, rowSearch, (r) => [r.name, r.position, r.tin, r.note]).map((row, i) => (
                   <Row
                     key={row.id}
                     row={row}
@@ -796,7 +798,7 @@ export default function PayrollPage() {
                 {month.rows.length === 0 && (
                   <tr>
                     <td
-                      colSpan={8 + doc.fields.length}
+                      colSpan={9 + doc.fields.length}
                       className="px-3 py-8 text-center text-sm text-gray-500"
                     >
                       Nobody on this month&apos;s payroll yet.
@@ -807,7 +809,7 @@ export default function PayrollPage() {
               {totals && month.rows.length > 0 && (
                 <tfoot>
                   <tr className="border-t-2 border-brand-200 bg-brand-50/40 font-semibold">
-                    <td className="px-3 py-2.5" colSpan={2}>
+                    <td className="px-3 py-2.5" colSpan={3}>
                       Total — {totals.people}{" "}
                       {totals.people === 1 ? "person" : "people"}
                     </td>
@@ -944,6 +946,20 @@ export default function PayrollPage() {
           </p>
         </section>
       )}
+      {/* Positions already used, offered as you type. */}
+      <datalist id="payroll-positions">
+        {Array.from(
+          new Set(
+            (doc?.months ?? [])
+              .flatMap((m) => m.rows.map((r) => r.position.trim()))
+              .filter((p) => p !== ""),
+          ),
+        )
+          .sort()
+          .map((p) => (
+            <option key={p} value={p} />
+          ))}
+      </datalist>
       <UndoToast undo={undoer} />
     </main>
   );
@@ -994,6 +1010,19 @@ function Row({
           maxLength={NAME_MAX}
           placeholder="Full name"
           className="w-40 rounded-md border border-transparent px-2 py-1 outline-none transition hover:border-gray-200 focus:border-brand-500 focus:bg-white focus:ring-1 focus:ring-brand-500"
+        />
+      </td>
+      <td className="px-3 py-1.5">
+        <input
+          value={row.position}
+          onChange={(e) =>
+            persist(setRowText(doc, monthId, row.id, "position", e.target.value))
+          }
+          maxLength={POSITION_MAX}
+          placeholder="Position"
+          list="payroll-positions"
+          aria-label={`Position of ${row.name || "this person"}`}
+          className="w-36 rounded-md border border-transparent px-2 py-1 outline-none transition hover:border-gray-200 focus:border-brand-500 focus:bg-white focus:ring-1 focus:ring-brand-500"
         />
       </td>
       <td className="px-3 py-1.5">

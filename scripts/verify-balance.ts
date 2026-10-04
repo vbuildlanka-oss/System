@@ -429,7 +429,7 @@ section("CSV export");
   const lines = csv.split("\n");
 
   check(
-    lines[0] === "Section,Date,Container,Detail,Partner,Amount",
+    lines[0] === "Section,Date,Container,Detail,Member,Amount",
     `there is a header row (${lines[0]})`,
   );
   check(
@@ -445,7 +445,7 @@ section("CSV export");
     "the summary block is present",
   );
   check(csv.includes("Container,Turnover,Expenses,Profit"), "the per-container block is present");
-  check(csv.includes("Partner,Expenses,Entries"), "the per-partner block is present");
+  check(csv.includes("Member,Expenses,Entries"), "the per-member block is present");
   check(
     csv.includes("(general, not per container)"),
     "general overhead is labelled in the container block rather than hidden",
@@ -493,7 +493,7 @@ function rangeRows(formula: string): [number, number] | null {
  * up blank in Google Sheets, LibreOffice or a mail preview pane that never
  * recalculates. jszip is already installed as an exceljs dependency.
  *
- * Tab order is Summary, Profit by Container, Expenses, Turnover, By Partner.
+ * Tab order is Summary, Profit by Container, Expenses, Turnover, By Member.
  */
 async function cachedCells(
   buffer: Buffer,
@@ -529,7 +529,7 @@ async function xlsxChecks() {
   const names = book.worksheets.map((w) => w.name);
   check(
     names.join(" | ") ===
-      "Summary | Profit by Container | Expenses | Turnover | By Partner | Balances",
+      "Summary | Profit by Container | Expenses | Turnover | By Member | Balances",
     `six tabs, in reading order (${names.join(" | ")})`,
   );
 
@@ -537,7 +537,7 @@ async function xlsxChecks() {
   const con = book.getWorksheet("Profit by Container")!;
   const ex = book.getWorksheet("Expenses")!;
   const tv = book.getWorksheet("Turnover")!;
-  const pa = book.getWorksheet("By Partner")!;
+  const pa = book.getWorksheet("By Member")!;
 
   /** A cell's formula, or "" if it holds a plain value. */
   const f = (ws: ExcelJS.Worksheet, ref: string): string => {
@@ -859,10 +859,10 @@ async function xlsxChecks() {
     check(ws !== undefined, "and it is called Expenses");
     check(
       String(ws.getCell("A2").value) === "Expense" &&
-        String(ws.getCell("B2").value) === "Partner" &&
+        String(ws.getCell("B2").value) === "Member" &&
         String(ws.getCell("C2").value) === "Container" &&
         String(ws.getCell("D2").value) === "Amount",
-      `the columns are Expense, Partner, Container, Amount (${[1, 2, 3, 4].map((c) => String(ws.getRow(2).getCell(c).value)).join(", ")})`,
+      `the columns are Expense, Member, Container, Amount (${[1, 2, 3, 4].map((c) => String(ws.getRow(2).getCell(c).value)).join(", ")})`,
     );
 
     // 4 expenses -> rows 3..6, total row 7.
@@ -960,7 +960,7 @@ async function xlsxChecks() {
 
     // Per-partner block: header row 9, partners 10-11, total 12.
     check(
-      String(ws.getCell("A9").value) === "Partner" &&
+      String(ws.getCell("A9").value) === "Member" &&
         String(ws.getCell("B9").value) === "Total",
       `there is a per-partner block below the total (${String(ws.getCell("A9").value)})`,
     );
@@ -1352,7 +1352,7 @@ async function xlsxChecks() {
       "a total row is named as such",
     );
     check(
-      reasons.some((x) => x.includes("no partner")),
+      reasons.some((x) => x.includes("no member")),
       "an unattributable row is named as such",
     );
   }
@@ -1395,12 +1395,37 @@ async function xlsxChecks() {
       `a sheet with no heading row explains itself ("${noHeader.problem ?? ""}")`,
     );
 
+    // The column is called Member now; files exported when it was called
+    // Partner must still import, and so must new ones.
+    const memberSheet = parseExpenseGrid(
+      [
+        ["Expense", "Member", "Container", "Amount"],
+        ["Customs duty", "Anton", "GAOU7441740", 150000],
+      ],
+      "Expenses",
+    );
+    check(
+      memberSheet.rows.length === 1 && memberSheet.rows[0].partner === "Anton",
+      "a sheet with a Member column imports",
+    );
+    const partnerSheet = parseExpenseGrid(
+      [
+        ["Expense", "Partner", "Container", "Amount"],
+        ["Customs duty", "Anton", "GAOU7441740", 150000],
+      ],
+      "Expenses",
+    );
+    check(
+      partnerSheet.rows.length === 1 && partnerSheet.rows[0].partner === "Anton",
+      "and so does one exported before, with a Partner column",
+    );
+
     const noPartner = parseExpenseGrid(
       [["Expense", "Amount"], ["Customs duty", 150_000]] as never,
       "Sheet1",
     );
     check(
-      noPartner.problem !== undefined && noPartner.problem.includes("Partner"),
+      noPartner.problem !== undefined && noPartner.problem.includes("Member"),
       `a sheet with no partner column names what is missing ("${noPartner.problem ?? ""}")`,
     );
     check(noPartner.rows.length === 0, "and imports nothing rather than guessing");

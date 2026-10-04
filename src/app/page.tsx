@@ -191,7 +191,7 @@ export default function Home() {
       const stats = priceListTotals(fresh);
       if (buyerCopy) {
         setNotice(
-          `That is a buyer's price list from BaleBook, so its prices already include a markup and were not used as costs. Read ${stats.items} items (${stats.bags} bags)` +
+          `That is a buyer's price list from MDN ERP, so its prices already include a markup and were not used as costs. Read ${stats.items} items (${stats.bags} bags)` +
             (stats.remembered > 0
               ? `; ${stats.remembered} were priced from what you last paid` +
                 (stats.missing > 0 ? `, and ${stats.missing} still need a cost.` : ".")
@@ -393,7 +393,7 @@ export default function Home() {
                 <span className="font-medium text-brand-600">
                   click to browse
                 </span>{" "}
-                · supplier PDF, CSV or Excel, or a BaleBook count · up to 15 MB
+                · supplier PDF, CSV or Excel, or a MDN ERP count · up to 15 MB
               </p>
             </>
           )}

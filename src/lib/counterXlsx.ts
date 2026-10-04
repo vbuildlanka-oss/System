@@ -42,7 +42,7 @@ export async function buildCountXlsx(doc: CountDoc): Promise<Buffer> {
   const totalRowNumber = totalRow(count);
 
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "BaleBook";
+  workbook.creator = "MDN ERP";
   workbook.created = new Date();
   workbook.calcProperties.fullCalcOnLoad = true;
 

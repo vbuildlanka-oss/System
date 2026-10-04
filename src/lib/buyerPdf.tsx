@@ -169,14 +169,14 @@ function BuyerDocument({
 
   return (
     <Document
-      author="BaleBook"
-      creator="BaleBook"
-      producer="BaleBook"
+      author="MDN ERP"
+      creator="MDN ERP"
+      producer="MDN ERP"
       title={heading}
     >
       <Page size="A4" style={styles.page} wrap>
         <View style={styles.header} fixed>
-          <Text style={styles.brand}>BALEBOOK</Text>
+          <Text style={styles.brand}>MDN ERP</Text>
           <Text style={styles.title}>{heading}</Text>
           {options?.subtitle ? (
             <Text style={styles.subtitle}>{options.subtitle}</Text>
@@ -243,7 +243,7 @@ function BuyerDocument({
         </View>
 
         <View style={styles.footer} fixed>
-          <Text>BaleBook</Text>
+          <Text>MDN ERP</Text>
           <Text
             render={({ pageNumber, totalPages }) =>
               `Page ${pageNumber} of ${totalPages}`

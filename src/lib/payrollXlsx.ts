@@ -58,6 +58,7 @@ function colLetter(index: number): string {
 /** Where each column of a month sheet sits, given the added fields. */
 interface Layout {
   name: number;
+  position: number;
   tin: number;
   gross: number;
   allowances: Array<{ field: PayrollField; col: number }>;
@@ -84,6 +85,7 @@ function layoutFor(doc: PayrollDoc): Layout {
   const next = () => (col += 1);
 
   const name = next();
+  const position = next();
   const tin = next();
   const gross = next();
   const allowances = allowanceFields.map((field) => ({ field, col: next() }));
@@ -100,6 +102,7 @@ function layoutFor(doc: PayrollDoc): Layout {
 
   const labels: string[] = [];
   labels[name - 1] = "Name";
+  labels[position - 1] = "Position";
   labels[tin - 1] = "TIN";
   labels[gross - 1] = "Gross Salary";
   for (const a of allowances) labels[a.col - 1] = a.field.label;
@@ -116,6 +119,7 @@ function layoutFor(doc: PayrollDoc): Layout {
 
   return {
     name,
+    position,
     tin,
     gross,
     allowances,
@@ -191,6 +195,7 @@ function addMonthSheet(
   ws.columns = Array.from({ length: layout.width }, (_, i) => {
     const col = i + 1;
     if (col === layout.name) return { width: 26 };
+    if (col === layout.position) return { width: 22 };
     if (col === layout.tin) return { width: 16 };
     if (col === layout.note) return { width: 30 };
     return { width: 18 };
@@ -224,6 +229,7 @@ function addMonthSheet(
     const figures = rowFigures(entry, doc.fields, doc.rates);
 
     row.getCell(layout.name).value = entry.name;
+    row.getCell(layout.position).value = entry.position;
     row.getCell(layout.tin).value = entry.tin;
 
     const setMoney = (col: number, value: number | ReturnType<typeof formula>) => {
@@ -434,7 +440,7 @@ export async function buildPayrollXlsx(
   if (!month) throw new Error("That month is not on the payroll.");
 
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "BaleBook";
+  workbook.creator = "MDN ERP";
   workbook.created = new Date();
   workbook.calcProperties.fullCalcOnLoad = true;
 
@@ -467,7 +473,7 @@ export async function buildPayrollYearXlsx(
   }
 
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "BaleBook";
+  workbook.creator = "MDN ERP";
   workbook.created = new Date();
   workbook.calcProperties.fullCalcOnLoad = true;
 

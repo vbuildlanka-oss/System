@@ -241,7 +241,7 @@ export function checkExpense(input: {
     return { ok: false, message: "Give the expense a name." };
   }
   if (input.partner.trim() === "") {
-    return { ok: false, message: "Say which partner this expense belongs to." };
+    return { ok: false, message: "Say which member this expense belongs to." };
   }
   if (input.amount === null || Number.isNaN(input.amount)) {
     return { ok: false, message: "Enter the amount." };
@@ -880,7 +880,7 @@ export function balanceToCsv(sheet: BalanceSheet): string {
   const lines: string[] = [];
   const totals = balanceTotals(sheet);
 
-  lines.push(["Section", "Date", "Container", "Detail", "Partner", "Amount"].map(csvCell).join(","));
+  lines.push(["Section", "Date", "Container", "Detail", "Member", "Amount"].map(csvCell).join(","));
 
   for (const entry of [...sheet.turnover].sort((a, b) => a.at.localeCompare(b.at))) {
     lines.push(
@@ -923,7 +923,7 @@ export function balanceToCsv(sheet: BalanceSheet): string {
   }
 
   lines.push("");
-  lines.push(["Partner", "Expenses", "Entries"].map(csvCell).join(","));
+  lines.push(["Member", "Expenses", "Entries"].map(csvCell).join(","));
   for (const row of byPartner(sheet)) {
     lines.push([row.partner, row.expenses, row.count].map(csvCell).join(","));
   }

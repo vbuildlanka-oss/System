@@ -15,6 +15,7 @@
  * is read on the Price List.
  */
 import { readFileSync } from "node:fs";
+import ExcelJS from "exceljs";
 import { POST as processPost } from "../src/app/api/process/route";
 import { POST as balanceImportPost } from "../src/app/api/balance-import/route";
 import { buildManifestXlsx } from "../src/lib/bagManifestXlsx";
@@ -70,14 +71,19 @@ import {
   setRowOverride,
   setRowText,
   rowFigures,
+  parsePayrollDoc,
 } from "../src/lib/payroll";
 import { buildPayrollXlsx, buildPayrollYearXlsx } from "../src/lib/payrollXlsx";
-import { isBalebookWordmark } from "../src/lib/parseOrder";
-import { recogniseCsv, recogniseGrids } from "../src/lib/restore";
-import { parseCsv } from "../src/lib/parseTabular";
+import { isBalebookWordmark, parseOrderText, readPdfText } from "../src/lib/parseOrder";
+import { recogniseCsv, recogniseGrids, recognisePdf } from "../src/lib/restore";
+import { parseCsv, xlsxToGrids } from "../src/lib/parseTabular";
+import { renderPayslipPdf } from "../src/lib/payrollPdf";
 import type { Restore } from "../src/lib/restoreTypes";
 import { matchRank, matches, searchList } from "../src/lib/search";
 import type { NextRequest } from "next/server";
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const pdfParse = require("pdf-parse/lib/pdf-parse.js");
 
 let failures = 0;
 function check(cond: boolean, msg: string) {
@@ -566,6 +572,111 @@ async function main() {
     check(gather("", pages).every((r) => r.kind === "page"), "an empty box lists the pages, like a menu");
     check(gather("stockpile", pages)[0]?.kind === "page", "a page name finds the page first");
     delete (globalThis as unknown as { window?: unknown }).window;
+  }
+
+  /* ================================================================== */
+  section("Renamed to MDN ERP, and files from before still restore");
+  {
+    let count = countFrom([{ name: "Anorak #2", qty: 9 }], "GAOU7441740", "Sri Lanka 07");
+    count = setCount(count, count.rows[0].id, 9);
+    const fresh = await readPdfText(await renderCountPdf(count));
+    check(fresh.lines.some((l) => isBalebookWordmark(l) && /M\s*D\s*N/.test(l)), "new documents carry the MDN ERP wordmark");
+    check(!/balebook/i.test(fresh.text), "and the old name appears nowhere on them");
+    check(fresh.balebook, "and are recognised as our own");
+
+    // A count printed before the rename: identical, but under the old wordmark.
+    const swap = (t: string) => (isBalebookWordmark(t) ? "B A L E B O O K" : t);
+    const old = {
+      ...fresh,
+      text: fresh.text.replace(/M D N\s+E R P/g, "B A L E B O O K"),
+      lines: fresh.lines.map(swap),
+      cells: fresh.cells.map((row) => row.map((c) => ({ ...c, text: swap(c.text) }))),
+      balebook: fresh.lines.map(swap).some(isBalebookWordmark),
+    };
+    check(old.balebook, "a file printed as BaleBook is still recognised");
+    const restored = recognisePdf(old, parseOrderText(old));
+    check(
+      restored?.restore.kind === "count" &&
+        restored.restore.rows[0]?.name === "Anorak #2" &&
+        restored.restore.rows[0]?.counted === 9,
+      "and still restores its counts",
+    );
+    check(!isBalebookWordmark("MDN ERP Traders"), "a supplier merely called MDN ERP is not mistaken for us");
+
+    const xlsx = new ExcelJS.Workbook();
+    await xlsx.xlsx.load((await buildCountXlsx(count)) as unknown as ArrayBuffer);
+    check(xlsx.creator === "MDN ERP", `workbooks are made by MDN ERP (${xlsx.creator})`);
+    for (const page of ["components/Nav.tsx", "app/layout.tsx"]) {
+      check(!/BaleBook/.test(readFileSync(`src/${page}`, "utf8")), `${page} no longer says BaleBook`);
+    }
+  }
+
+  /* ================================================================== */
+  section("Payroll has a Position for each person");
+  {
+    let doc = emptyPayrollDoc();
+    const aug = addMonth(doc, "2026-08");
+    doc = aug.doc;
+    doc = addRow(doc, aug.month!.id, { name: "Nimal Perera", position: "Warehouse supervisor", tin: "123456789", gross: 100_000 });
+    doc = addRow(doc, aug.month!.id, { name: "Sunil Fernando", tin: "", gross: 45_000 });
+    const rows = findMonth(doc, aug.month!.id)!.rows;
+    check(rows[0].position === "Warehouse supervisor", "a position is kept");
+    check(rows[1].position === "", "and is blank until given");
+    doc = setRowText(doc, aug.month!.id, rows[1].id, "position", "  Driver  ");
+    check(findMonth(doc, aug.month!.id)!.rows[1].position === "Driver", "and can be typed in, tidied");
+
+    const sep = addMonth(doc, "2026-09");
+    check(sep.month!.rows[0].position === "Warehouse supervisor", "it comes forward to the next month");
+    doc = sep.doc;
+
+    const legacy = parsePayrollDoc({ months: [{ month: "2026-07", rows: [{ name: "Old Row", gross: 1 }] }] });
+    check(legacy.months[0].rows[0].position === "", "a payroll saved before Position existed loads with it blank");
+
+    const buf = await buildPayrollXlsx(doc, aug.month!.id);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buf as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet("August 2026")!;
+    check(ws.getCell("B2").value === "Position" && ws.getCell("B3").value === "Warehouse supervisor", "the spreadsheet has a Position column after Name");
+    const net = ws.getCell(3, (ws.getRow(2).values as unknown[]).indexOf("Net Salary"));
+    check(Number((net.value as { result: number }).result) === 92_000, `and the formulas still add up (${(net.value as { result: number }).result})`);
+
+    const slip = String((await pdfParse(await renderPayslipPdf(doc, aug.month!.id, rows[0].id))).text);
+    check(slip.includes("Warehouse supervisor"), "the payslip shows the position");
+
+    const up = await upload(buf, "Payroll - August 2026.xlsx", "/payroll");
+    if (up.body.restore?.kind === "payroll") {
+      const back = restorePayroll(emptyPayrollDoc(), up.body.restore.payroll).doc;
+      check(back.months[0].rows[0].position === "Warehouse supervisor", "restoring the workbook brings positions back");
+      check(back.months[0].rows[0].tin === "123456789" && back.months[0].rows[0].gross === 100_000, "with TIN and salary in the right places");
+    } else check(false, "the payroll workbook with positions is recognised");
+
+    // A workbook made before Position was a column: TIN second, salary third.
+    const grids = await xlsxToGrids(buf);
+    const withoutPosition = grids.map((g) =>
+      /\d{4}$/.test(g.name) ? { ...g, rows: g.rows.map((r) => r.filter((_, i) => i !== 1)) } : g,
+    );
+    const oldRead = recogniseGrids(withoutPosition);
+    if (oldRead?.restore.kind === "payroll") {
+      const back = restorePayroll(emptyPayrollDoc(), oldRead.restore.payroll).doc;
+      const nimal = back.months[0].rows[0];
+      check(nimal.tin === "123456789" && nimal.gross === 100_000 && nimal.position === "", "an older payroll workbook still restores, TIN and salary intact");
+      check(monthTotals(back.months[0], back.fields, back.rates).net === monthTotals(findMonth(doc, aug.month!.id)!, doc.fields, doc.rates).net, "to the same wage bill");
+    } else check(false, "an older payroll workbook is still recognised");
+  }
+
+  /* ================================================================== */
+  section("Expenses belong to a member");
+  {
+    const sheet = parseBalanceSheet({
+      expenses: [{ id: "e1", name: "Customs duty", partner: "Lathurshan", amount: 50_000, containerId: "", at: "2026-08-01T12:00:00.000Z", note: "" }],
+    });
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load((await buildBalanceXlsx(sheet)) as unknown as ArrayBuffer);
+    check(wb.worksheets.some((w) => w.name === "By Member"), "the workbook has a By Member tab");
+    check(!wb.worksheets.some((w) => /partner/i.test(w.name)), "and no tab still says partner");
+    check(wb.getWorksheet("Expenses")!.getCell("C2").value === "Member", "the expenses tab has a Member column");
+    const balancePage = readFileSync("src/app/balance/page.tsx", "utf8");
+    check(!/>\s*Partner\s*</.test(balancePage) && !/placeholder="[^"]*[Pp]artner/.test(balancePage), "the page says Member, not Partner");
   }
 
   if (failures === 0) console.log("\nALL ROUND-TRIP CHECKS PASSED");

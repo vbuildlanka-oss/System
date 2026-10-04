@@ -52,7 +52,7 @@ const S_SUMMARY = "Summary";
 const S_CONTAINER = "Profit by Container";
 const S_EXPENSES = "Expenses";
 const S_TURNOVER = "Turnover";
-const S_PARTNER = "By Partner";
+const S_PARTNER = "By Member";
 const S_BALANCES = "Balances";
 
 /** The label on the general overhead row of the Profit by Container tab. */
@@ -96,7 +96,7 @@ export async function buildBalanceXlsx(sheet: BalanceSheet): Promise<Buffer> {
   const tvAmountCol = colRange(S_TURNOVER, "C", tvCount);
 
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "BaleBook";
+  workbook.creator = "MDN ERP";
   workbook.created = new Date();
   // Recalculate on open, so the formulas are authoritative and the cached
   // results written below are only there for viewers that never recalculate.
@@ -167,7 +167,7 @@ export async function buildBalanceXlsx(sheet: BalanceSheet): Promise<Buffer> {
       ),
     ],
     [
-      "Partners",
+      "Members",
       formula(
         `COUNTA('${S_PARTNER}'!$A$${DATA_START_ROW}:$A$${pLast})`,
         partners.length,
@@ -310,7 +310,7 @@ export async function buildBalanceXlsx(sheet: BalanceSheet): Promise<Buffer> {
     { width: 30 },
   ];
   titleRow(ex, "A1:F1", "Expenses");
-  headerRow(ex, 2, ["Date", "Expense", "Partner", "Container", "Amount", "Note"], 4);
+  headerRow(ex, 2, ["Date", "Expense", "Member", "Container", "Amount", "Note"], 4);
 
   expenses.forEach((expense, i) => {
     const row = ex.getRow(DATA_START_ROW + i);
@@ -396,8 +396,8 @@ export async function buildBalanceXlsx(sheet: BalanceSheet): Promise<Buffer> {
     views: [{ state: "frozen", ySplit: 2 }],
   });
   pa.columns = [{ width: 26 }, { width: 18 }, { width: 12 }, { width: 16 }];
-  titleRow(pa, "A1:D1", "Expenses by Partner");
-  headerRow(pa, 2, ["Partner", "Expenses", "Entries", "Share of spend"]);
+  titleRow(pa, "A1:D1", "Expenses by Member");
+  headerRow(pa, 2, ["Member", "Expenses", "Entries", "Share of spend"]);
 
   partners.forEach((entry, i) => {
     const r = DATA_START_ROW + i;
@@ -452,7 +452,7 @@ export async function buildBalanceXlsx(sheet: BalanceSheet): Promise<Buffer> {
     pa,
     pTotal + 2,
     `A${pTotal + 2}:D${pTotal + 2}`,
-    "Every expense belongs to a partner, so these rows account for all spending, general overhead included. The share is of total expenses, not of turnover.",
+    "Every expense belongs to a member, so these rows account for all spending, general overhead included. The share is of total expenses, not of turnover.",
   );
   pa.pageSetup.printTitlesRow = "1:2";
 

@@ -110,14 +110,14 @@ export interface ManifestPdfData {
 function ManifestDocument({ data }: { data: ManifestPdfData }) {
   return (
     <Document
-      author="BaleBook"
-      creator="BaleBook"
-      producer="BaleBook"
+      author="MDN ERP"
+      creator="MDN ERP"
+      producer="MDN ERP"
       title={data.orderNumber}
     >
       <Page size="A4" style={styles.page} wrap>
         <View style={styles.header} fixed>
-          <Text style={styles.brand}>BALEBOOK</Text>
+          <Text style={styles.brand}>MDN ERP</Text>
           <Text style={styles.title}>{data.orderNumber}</Text>
           <Text style={styles.container}>
             Container Number: {data.containerNumber}
@@ -151,7 +151,7 @@ function ManifestDocument({ data }: { data: ManifestPdfData }) {
         </View>
 
         <View style={styles.footer} fixed>
-          <Text>BaleBook</Text>
+          <Text>MDN ERP</Text>
           <Text
             render={({ pageNumber, totalPages }) =>
               `Page ${pageNumber} of ${totalPages}`

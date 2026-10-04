@@ -70,7 +70,7 @@ export async function buildBalancesXlsx(sheet: BalanceSheet): Promise<Buffer> {
   const leftCol = `$E$${firstRow}:$E$${lastRow}`;
 
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "BaleBook";
+  workbook.creator = "MDN ERP";
   workbook.created = new Date();
   workbook.calcProperties.fullCalcOnLoad = true;
 
