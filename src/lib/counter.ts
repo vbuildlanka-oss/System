@@ -65,6 +65,14 @@ export interface CountDoc {
   /** The order the list came from, read out of the uploaded file's name. */
   orderNumber: string;
   rows: CountRow[];
+  /**
+   * Bags counted off the truck, one tap per bag, regardless of item.
+   *
+   * Unloading is too fast to sort bags by item as they come off, but the total
+   * still has to be known. Kept apart from the per-item counts so neither can
+   * disturb the other, and so the two totals can be compared afterwards.
+   */
+  tally: number;
   updatedAt: string;
 }
 
@@ -77,6 +85,7 @@ export function emptyCountDoc(): CountDoc {
     containerId: "",
     orderNumber: "",
     rows: [],
+    tally: 0,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -449,6 +458,19 @@ export function setOrderNumber(doc: CountDoc, orderNumber: string): CountDoc {
 }
 
 /** Start the tallies again, keeping the list of items. */
+/** Add to (or take from) the bags-unloaded tally. Never below zero. */
+export function addToTally(doc: CountDoc, by: number): CountDoc {
+  const step = Math.floor(Number.isFinite(by) ? by : 0);
+  if (step === 0) return doc;
+  return touch(doc, {
+    tally: Math.max(0, Math.min(LIMITS.qty, (doc.tally ?? 0) + step)),
+  });
+}
+
+export function resetTally(doc: CountDoc): CountDoc {
+  return touch(doc, { tally: 0 });
+}
+
 export function resetCounts(doc: CountDoc): CountDoc {
   return touch(doc, {
     rows: doc.rows.map((row) => ({ ...row, counted: 0, touched: false })),
@@ -477,6 +499,8 @@ export function parseCountDoc(input: unknown): CountDoc {
     containerId: sanitizeLine(raw.containerId, CONTAINER_LABEL_MAX),
     orderNumber: sanitizeLine(raw.orderNumber, LIMITS.title),
     rows,
+    // Absent on counts saved before the tally existed.
+    tally: Math.floor(clampNumber(raw.tally, LIMITS.qty)),
     updatedAt: String(raw.updatedAt ?? new Date().toISOString()),
   };
 }

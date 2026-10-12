@@ -489,6 +489,10 @@ container, then search and tally each item up from zero. Two files come out: a
 **spreadsheet** to file the count, and a **PDF for pricing** to feed straight back
 into the [Price List](#1-price-list-).
 
+- **Bags unloaded**, at the top: the container name and one big **+** button,
+  tapped once per bag as it comes off the truck, whatever the item. A **−** takes
+  one back and a reset sets it to zero (both can be undone). It is separate from
+  the per-item counts, is saved as you go, and survives uploading the list.
 - **Type, then press Enter.** The search box stays focused and Enter adds one to the
   best match, so counting is three letters and a keypress rather than hunting
   through a list with your hands full. The exact name always ranks first.
@@ -747,7 +751,7 @@ npx tsx scripts/verify-payroll.ts       # wages, EPF/ETF, payslip privacy, the m
 npx tsx scripts/verify-roundtrip.ts     # every export re-imports; search; quick-jump
 ```
 
-2,066 checks. The count-to-price suite renders a real count PDF, parses it back
+2,079 checks. The count-to-price suite renders a real count PDF, parses it back
 with the same code the upload path uses, and fails if a single item name or count
 comes out different — the two files are a contract, so the round trip is tested
 rather than assumed.

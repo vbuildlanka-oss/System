@@ -21,6 +21,7 @@ import { LIMITS } from "@/lib/types";
 import {
   addItem,
   addToCount,
+  addToTally,
   bestMatch,
   clearCount,
   countStatus,
@@ -32,6 +33,7 @@ import {
   loadCountDoc,
   removeRow,
   resetCounts,
+  resetTally,
   restoreCounts,
   saveCountDoc,
   searchRows,
@@ -159,11 +161,15 @@ export default function CounterPage() {
           shipmentFromFilename(f.name).orderNumber ||
           parsed.title;
         // Only names and quantities cross over. The prices in that file stay in it.
-        const next = fromOrderItems(
-          parsed.items.map((item) => ({ name: item.name, qty: item.qty })),
-          doc?.containerId ?? "",
-          orderNumber,
-        );
+        const next = {
+          ...fromOrderItems(
+            parsed.items.map((item) => ({ name: item.name, qty: item.qty })),
+            doc?.containerId ?? "",
+            orderNumber,
+          ),
+          // Bags already counted off the truck stay counted when the list arrives.
+          tally: doc?.tally ?? 0,
+        };
         if (next.rows.length === 0) {
           throw new Error("No items were found in that file.");
         }
@@ -350,6 +356,69 @@ export default function CounterPage() {
           if (f) handleFile(f);
         }}
       />
+
+      {/* Bags unloaded: one tap per bag, whatever the item */}
+      <section className="mb-4 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="min-w-[10rem] flex-1 text-xs font-medium text-gray-600">
+            Container
+            <input
+              value={doc?.containerId ?? ""}
+              onChange={(e) =>
+                persist(setContainer(doc ?? emptyCountDoc(), e.target.value))
+              }
+              maxLength={CONTAINER_LABEL_MAX}
+              placeholder="GAOU7441740"
+              className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm outline-none transition focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
+            />
+          </label>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                const current = doc ?? emptyCountDoc();
+                if ((current.tally ?? 0) === 0) return;
+                remember(current, "Bags unloaded -1");
+                persist(addToTally(current, -1));
+              }}
+              aria-label="One bag fewer"
+              className="flex h-12 w-12 items-center justify-center rounded-xl border border-gray-300 text-gray-600 transition hover:bg-gray-50 active:scale-95"
+            >
+              <Minus className="h-5 w-5" />
+            </button>
+            <div className="min-w-[4.5rem] text-center">
+              <p className="text-3xl font-bold tabular-nums text-gray-900">
+                {doc?.tally ?? 0}
+              </p>
+              <p className="text-[11px] text-gray-500">bags unloaded</p>
+            </div>
+            <button
+              onClick={() => {
+                const current = doc ?? emptyCountDoc();
+                remember(current, "Bags unloaded +1");
+                persist(addToTally(current, 1));
+              }}
+              aria-label="One more bag"
+              className="flex h-14 w-20 items-center justify-center rounded-xl bg-brand-600 text-white shadow-sm transition hover:bg-brand-700 active:scale-95"
+            >
+              <Plus className="h-7 w-7" />
+            </button>
+            {(doc?.tally ?? 0) > 0 && (
+              <button
+                onClick={() => {
+                  if (!doc) return;
+                  remember(doc, `Bags unloaded reset from ${doc.tally}`);
+                  persist(resetTally(doc));
+                }}
+                title="Back to zero - you can undo this"
+                aria-label="Reset bags unloaded"
+                className="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600"
+              >
+                <RotateCcw className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        </div>
+      </section>
 
       {/* Which container is being counted */}
       <section className="mb-4 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">

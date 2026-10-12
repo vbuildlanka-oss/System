@@ -9,12 +9,13 @@
  *    figure in Excel re-states it
  *  - no price from the uploaded buyer list reaches the count sheet
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import ExcelJS from "exceljs";
 import type { NextRequest } from "next/server";
 import {
   addItem,
   addToCount,
+  addToTally,
   bestMatch,
   clearCount,
   countFilename,
@@ -29,6 +30,7 @@ import {
   parseCountDoc,
   removeRow,
   resetCounts,
+  resetTally,
   searchRows,
   setContainer,
   setCount,
@@ -556,6 +558,35 @@ async function fileChecks() {
 
   mkdirSync(".verify", { recursive: true });
   writeFileSync(".verify/bag-count.xlsx", buffer);
+
+  section("Bags unloaded: one running total, whatever the item");
+  {
+    let d = emptyCountDoc();
+    check(d.tally === 0, "the tally starts at zero");
+    d = addToTally(d, 1);
+    d = addToTally(d, 1);
+    d = addToTally(d, 1);
+    check(d.tally === 3, `each tap adds one (${d.tally})`);
+    d = addToTally(d, -1);
+    check(d.tally === 2, "and a mistake can be taken back");
+    check(addToTally(emptyCountDoc(), -1).tally === 0, "it never goes below zero");
+    check(addToTally(d, Number.NaN).tally === 2, "nonsense changes nothing");
+    check(resetTally(d).tally === 0, "it can be reset");
+
+    const withList = fromOrderItems([{ name: "Anorak", qty: 5 }], "GAOU7441740");
+    const tallied = addToTally(withList, 7);
+    check(tallied.rows[0].counted === 0 && !tallied.rows[0].touched, "it does not touch the item counts");
+    check(resetCounts(tallied).tally === 7, "and resetting the item counts leaves it alone");
+
+    const back = parseCountDoc(JSON.parse(JSON.stringify(tallied)));
+    check(back.tally === 7, "it is saved with the count");
+    check(parseCountDoc({ rows: [] }).tally === 0, "a count saved before the tally existed loads at zero");
+    check(parseCountDoc({ tally: -4 }).tally === 0, "a negative saved tally is refused");
+    check(parseCountDoc({ tally: 3.7 }).tally === 3, "and bags are whole");
+
+    const page = readFileSync("src/app/counter/page.tsx", "utf8");
+    check(/tally: doc\?\.tally \?\? 0/.test(page), "uploading the list keeps the bags already counted off the truck");
+  }
 
   if (failures > 0) {
     console.error(`\n${failures} CHECK(S) FAILED`);
