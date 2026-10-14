@@ -275,6 +275,36 @@ right now.
 Availability is a snapshot, not a reservation — two buyers wanting the same item
 will both see the same stock figure.
 
+### Can every request be filled?
+
+At the bottom of the page, the question the per-buyer view cannot answer: with
+**everyone's** requests against **one** bag count, does it go round?
+
+- **Upload the bag count**: the xlsx or pdf from the [Counter](#8-counter-counter),
+  or **Use the Counter's count** straight from this device. Several count files
+  add up, e.g. one per container. Any other order file is read with its
+  quantities as the count.
+- **Upload request sheets, as many as you like in one go**: the request PDFs
+  and CSVs this page downloads (a CSV with several buyers becomes several
+  sheets), or **add the lists saved here**. The same buyer twice is one buyer:
+  a newer sheet replaces the older one, matched on phone (`0771234567` and
+  `+94 77 123 4567` are the same) or name. A file dropped on the wrong side is
+  recognised and filed on the right one.
+- **The answer**: *Yes, all can be filled*, or *No, N bags are lacking across
+  M items*, with what that is worth at the sheets' prices.
+  - **By item**: wanted, counted, lacking, and each buyer's *gets / wants*.
+  - **By buyer**: filled in full, or exactly which lines fall short.
+  - **Left over**: counted bags nobody asked for.
+- Demand is what is still **outstanding** (wanted minus supplied).
+- **When an item is short, the top sheet is served first.** Reorder the sheets
+  with the arrows to change who comes first. A buyer who would be covered on
+  their own but loses out to a sheet above is told so.
+- **Not counted is not zero.** An item on the count that nobody reached shows
+  as *Not counted*, and the check will not say "all filled" while one is
+  wanted. An item on no count at all is *None counted*.
+- It only reads: the stockpile, the request lists and the count are never
+  changed. It is saved with the request lists (and in their saved file).
+
 ## 5. Stockpile (`/stockpile`)
 
 When sales are slow, leftover bags don't disappear — they get set aside and
@@ -739,6 +769,7 @@ npx tsx scripts/verify-api.ts        # API routes: every success and failure pat
 npx tsx scripts/verify-bag-manifest.ts  # manifests: containers, reduction, exports
 npx tsx scripts/verify-refno.ts         # references: device tags, uniqueness
 npx tsx scripts/verify-request.ts       # buyer requests: matching, supplying, files
+npx tsx scripts/verify-fulfilment.ts    # every request against a bag count
 npx tsx scripts/verify-balance.ts       # balance sheet: profit scopes, workbooks, import
 npx tsx scripts/verify-appdata.ts       # saved data: listing, backup, clearing
 npx tsx scripts/verify-shipment.ts      # order number + container: names, files, privacy
