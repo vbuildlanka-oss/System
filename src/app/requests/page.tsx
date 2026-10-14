@@ -21,6 +21,8 @@ import {
   FileDown,
 } from "lucide-react";
 import BuyerFields from "@/components/BuyerFields";
+import FulfilmentCheck from "@/components/FulfilmentCheck";
+import { emptyCheck, type FulfilmentCheck as Check } from "@/lib/fulfilment";
 import { EMPTY_BUYER, rememberBuyer, hasBuyerInfo, type Buyer } from "@/lib/buyer";
 import type { Restore } from "@/lib/restoreTypes";
 import { formatLKR, type ParsedOrder } from "@/lib/types";
@@ -128,6 +130,16 @@ export default function RequestsPage() {
   }, []);
 
   const undoer = useUndo<RequestDoc>(persist);
+
+  /** The all-requests-against-the-count check, kept in the same document. */
+  const changeCheck = useCallback(
+    (next: Check, undo?: string) => {
+      const base = doc ?? loadRequests();
+      if (undo) undoer.remember(base, undo);
+      persist({ ...base, check: next, updatedAt: new Date().toISOString() });
+    },
+    [doc, persist, undoer],
+  );
 
   const save = useCallback(
     (request: BuyerRequest) => {
@@ -784,6 +796,13 @@ export default function RequestsPage() {
           stockpile right now. Supplying a line takes the bags out of stock and
           records them here in one step.
         </p>
+        <a
+          href="#fulfilment"
+          className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-brand-700 hover:underline"
+        >
+          <PackageCheck className="h-4 w-4" />
+          Check every request against a bag count
+        </a>
       </header>
 
       <input
@@ -1614,6 +1633,14 @@ export default function RequestsPage() {
             </section>
           )}
         </div>
+      )}
+
+      {doc && (
+        <FulfilmentCheck
+          check={doc.check ?? emptyCheck()}
+          onChange={changeCheck}
+          savedRequests={requests}
+        />
       )}
 
       <footer className="mt-16 text-center text-xs text-gray-400">

@@ -24,6 +24,7 @@ import {
   withdraw,
   type Stockpile,
 } from "./stockpile";
+import { emptyCheck, parseCheck, type FulfilmentCheck } from "./fulfilment";
 
 export const REQUESTS_KEY = "balebook.buyerRequests.v1";
 export const REQUEST_VERSION = 1;
@@ -89,6 +90,11 @@ export interface RequestDoc {
   requests: BuyerRequest[];
   /** Uploaded container/order files kept for availability checks. */
   sources: StockSource[];
+  /**
+   * Bag counts and request sheets uploaded to check whether every request can
+   * be filled at once. Reference data only: see fulfilment.ts.
+   */
+  check: FulfilmentCheck;
   updatedAt: string;
 }
 
@@ -98,6 +104,7 @@ export function emptyRequestDoc(): RequestDoc {
     version: REQUEST_VERSION,
     requests: [],
     sources: [],
+    check: emptyCheck(),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -544,6 +551,7 @@ export function parseRequestDoc(input: unknown): RequestDoc {
     version: Number(raw.version) || REQUEST_VERSION,
     requests,
     sources,
+    check: parseCheck(raw.check),
     updatedAt: String(raw.updatedAt ?? new Date().toISOString()),
   };
 }
