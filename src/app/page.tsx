@@ -117,6 +117,9 @@ export default function Home() {
     [doc],
   );
   const ready = doc !== null && isPriceListReady(doc);
+  // The file's Per Bag is the price. A column to type one in only appears when
+  // the file had none to give, such as a warehouse count.
+  const showCost = doc?.needsCosts ?? false;
 
   const shownRows = useMemo(() => {
     if (!doc) return [];
@@ -609,7 +612,9 @@ export default function Home() {
                         ?.focus();
                     }
                   }}
-                  placeholder="Find an item, then Enter to type its cost"
+                  placeholder={
+                    showCost ? "Find an item, then Enter to type its cost" : "Find an item"
+                  }
                   className="w-full rounded-lg border border-gray-300 py-1.5 pl-9 pr-3 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
                 />
               </div>
@@ -626,9 +631,11 @@ export default function Home() {
                   {onlyMissing ? "Showing" : "Show"} the {totals.missing} without a cost
                 </button>
               )}
-              <span className="text-xs text-gray-400">
-                Enter moves to the next cost
-              </span>
+              {showCost && (
+                <span className="text-xs text-gray-400">
+                  Enter moves to the next cost
+                </span>
+              )}
             </div>
             <div className="preview-scroll max-h-[460px] overflow-auto">
               <table className="w-full border-collapse text-sm">
@@ -638,9 +645,11 @@ export default function Home() {
                       Item Name
                     </th>
                     <th className="px-4 py-3 text-center font-semibold">Qty</th>
-                    <th className="px-4 py-3 text-right font-semibold">
-                      Cost / bag
-                    </th>
+                    {showCost && (
+                      <th className="px-4 py-3 text-right font-semibold">
+                        Cost / bag
+                      </th>
+                    )}
                     <th className="px-4 py-3 text-right font-semibold">
                       Per Bag
                     </th>
@@ -651,7 +660,7 @@ export default function Home() {
                 <tbody>
                   {shownRows.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="px-4 py-6 text-center text-sm text-gray-500">
+                      <td colSpan={showCost ? 6 : 5} className="px-4 py-6 text-center text-sm text-gray-500">
                         {onlyMissing && totals.missing === 0
                           ? "Every item has a cost."
                           : "Nothing matches that search."}
@@ -673,6 +682,7 @@ export default function Home() {
                         <td className="px-4 py-2.5 text-center text-gray-600">
                           {row.qty}
                         </td>
+                        {showCost && (
                         <td className="px-4 py-1.5 text-right">
                           <input
                             type="number"
@@ -706,6 +716,7 @@ export default function Home() {
                             </span>
                           )}
                         </td>
+                        )}
                         <td className="px-4 py-2.5 text-right font-medium text-gray-900">
                           {needsPrice ? (
                             <span className="text-amber-700">&mdash;</span>
@@ -740,9 +751,11 @@ export default function Home() {
                   <tr>
                     <td className="px-4 py-3">Total</td>
                     <td className="px-4 py-3 text-center">{totals.bags}</td>
-                    <td className="px-4 py-3 text-right">
-                      {formatLKR(totals.cost)}
-                    </td>
+                    {showCost && (
+                      <td className="px-4 py-3 text-right">
+                        {formatLKR(totals.cost)}
+                      </td>
+                    )}
                     <td className="px-4 py-3" />
                     <td className="px-4 py-3 text-right">
                       {totals.missing > 0 ? "\u2014" : formatLKR(totals.selling)}
