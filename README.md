@@ -78,8 +78,10 @@ where it left off:
 | Balance sheet workbook | expenses, **turnover** and balances, with their dates, after a preview |
 | Updated order sheet | the buyer and reference it was printed for |
 
-A buyer's price list is recognised and its prices are **not** taken as costs,
-since they already include the markup. Supplier files are read exactly as
+A buyer's price list keeps every price exactly as printed. Since those
+prices already include the markup, the markup starts at **Rs 0** so it is not
+added twice (raise it only to add more on top), and they are not remembered as
+costs. Supplier files are read exactly as
 before: one of ours is only recognised by the MDN ERP wordmark or the app's
 own exact headings, and the suite checks the sample supplier PDFs still read
 as 85 items and 733 bags.

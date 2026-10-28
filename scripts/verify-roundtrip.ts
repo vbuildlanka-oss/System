@@ -50,6 +50,7 @@ import {
 import { renderBuyerPdf, renderSheetPdf } from "../src/lib/buyerPdf";
 import { buildBuyerPriceList, buildSheetFromRows, type ParsedOrder } from "../src/lib/types";
 import { createRequest, requestsToCsv } from "../src/lib/buyerRequest";
+import { fromParsedItems, toOrderItems } from "../src/lib/priceList";
 import { renderRequestPdf } from "../src/lib/requestPdf";
 import { parseBalanceSheet } from "../src/lib/balanceSheet";
 import { buildBalanceXlsx } from "../src/lib/balanceXlsx";
@@ -448,17 +449,22 @@ async function main() {
   }
 
   /* ================================================================== */
-  section("A buyer's price list is never taken as costs");
+  section("A buyer's price list keeps its prices, and is not marked up twice");
   {
     const buyer = buildBuyerPriceList({ title: "Sri Lanka Order 03", items: ITEMS }, 2_000);
     const { body } = await upload(await renderBuyerPdf(buyer, { buyer: { name: "Ahmad", phone: "0771234567" } }), "Sri Lanka Order 03 - Buyer Price List.pdf", "/");
     check(body.restore?.kind === "buyer-price-list", "it is recognised as the buyer's copy");
     if (body.restore?.kind === "buyer-price-list") check(body.restore.orderNumber === "Sri Lanka Order 03", "with its order number");
-    // The page zeroes these before using them; the file itself carries the
-    // marked-up figure, which is exactly why it must not be read as a cost.
-    check(body.items[0].perBag === 26_000, "its prices include the markup, which is why they are not costs");
+    check(body.items.every((i) => i.perBag > 0), "every price comes through");
+    check(body.items[0].perBag === 26_000, `as printed, markup included (${body.items[0].perBag})`);
+    const sheet = fromParsedItems(body.items, { markup: 0, pricesIncludeMarkup: true });
+    check(sheet.rows.every((r) => r.costPerBag > 0) && !sheet.needsCosts, "nothing has to be typed in");
+    check(sheet.pricesIncludeMarkup, "and the sheet knows they are selling prices");
+    const again = buildBuyerPriceList({ title: "x", items: toOrderItems(sheet) }, sheet.markup);
+    check(again.rows.every((r, n) => r.perBag === buyer.rows[n].perBag) && again.grandTotal === buyer.grandTotal, "re-downloading quotes the buyer the same prices");
     const page = readFileSync("src/app/page.tsx", "utf8");
-    check(/buyer-price-list[\s\S]{0,400}perBag: 0/.test(page), "and the Price List drops them rather than marking them up again");
+    check(/markup: buyerCopy \? 0/.test(page), "the Price List starts the markup at zero for a buyer's copy");
+    check(/if \(doc\.pricesIncludeMarkup\)/.test(page), "and does not file selling prices as remembered costs");
   }
 
   /* ================================================================== */
