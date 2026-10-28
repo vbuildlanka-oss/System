@@ -155,20 +155,12 @@ export default function Home() {
         throw new Error(data.error || "Failed to read that file.");
       }
       // A buyer's price list printed by this app carries SELLING prices - the
-      // cost with the markup already on it. Taking those as costs would put the
-      // markup on twice, so only the items and bag counts are kept, and the
-      // costs come from what was last paid. Supplier files never match this.
+      // cost with the markup already on it. They are used exactly as printed,
+      // with the markup set to zero, so the buyer is quoted the same prices
+      // again rather than having the markup added a second time.
       const restore = (data as { restore?: Restore }).restore;
       const buyerCopy = restore?.kind === "buyer-price-list";
-      const loaded: ParsedOrder = buyerCopy
-        ? {
-            ...(data as ParsedOrder),
-            items: (data as ParsedOrder).items.map((i) => ({ ...i, perBag: 0 })),
-            computedTotal: 0,
-            printedTotal: null,
-            totalsMatch: true,
-          }
-        : (data as ParsedOrder);
+      const loaded: ParsedOrder = data as ParsedOrder;
       setParsed(loaded);
 
       // Prefer the order number in the file name over the heading inside the
@@ -181,9 +173,11 @@ export default function Home() {
           (restore?.kind === "buyer-price-list" ? restore.orderNumber : "") ||
           shipmentFromFilename(f.name).orderNumber ||
           loaded.title,
-        markup: Number.isFinite(markup) ? markup : DEFAULT_MARKUP,
-        // A count has no prices, so whatever we last paid is offered.
-        book: currentBook,
+        markup: buyerCopy ? 0 : Number.isFinite(markup) ? markup : DEFAULT_MARKUP,
+        // A count has no prices, so whatever we last paid is offered. Not for
+        // a buyer's copy: a remembered cost there would be sold at cost.
+        book: buyerCopy ? undefined : currentBook,
+        pricesIncludeMarkup: buyerCopy,
       });
       if (fresh.rows.length === 0) {
         throw new Error("No items with bag counts were found in that file.");
@@ -194,13 +188,8 @@ export default function Home() {
       const stats = priceListTotals(fresh);
       if (buyerCopy) {
         setNotice(
-          `That is a buyer's price list from MDN ERP, so its prices already include a markup and were not used as costs. Read ${stats.items} items (${stats.bags} bags)` +
-            (stats.remembered > 0
-              ? `; ${stats.remembered} were priced from what you last paid` +
-                (stats.missing > 0 ? `, and ${stats.missing} still need a cost.` : ".")
-              : stats.missing > 0
-                ? `; type in what each bag cost.`
-                : "."),
+          `That is a buyer's price list from MDN ERP. Read ${stats.items} items (${stats.bags} bags) with their prices as printed. Those prices already include the markup, so the markup is set to Rs 0 - raise it only to add more on top.` +
+            (stats.missing > 0 ? ` ${stats.missing} item${stats.missing === 1 ? " has" : "s have"} no price on the file and need one.` : ""),
         );
       } else if (stats.missing > 0) {
         setNotice(
@@ -287,15 +276,20 @@ export default function Home() {
       setBuyerRefreshKey((k) => k + 1);
 
       // And remember what these bags cost, so the next count fills itself in.
-      const learned = rememberPrices(
-        loadPriceBook(),
-        doc.rows.map((row) => ({ name: row.name, costPerBag: row.costPerBag })),
-      );
-      savePriceBook(learned);
-      setBook(learned);
-      setNotice(
-        `Downloaded. ${doc.rows.length} price${doc.rows.length === 1 ? "" : "s"} remembered for next time.`,
-      );
+      // Not from a buyer's copy: those are selling prices, not costs.
+      if (doc.pricesIncludeMarkup) {
+        setNotice("Downloaded.");
+      } else {
+        const learned = rememberPrices(
+          loadPriceBook(),
+          doc.rows.map((row) => ({ name: row.name, costPerBag: row.costPerBag })),
+        );
+        savePriceBook(learned);
+        setBook(learned);
+        setNotice(
+          `Downloaded. ${doc.rows.length} price${doc.rows.length === 1 ? "" : "s"} remembered for next time.`,
+        );
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Download failed.");
     } finally {

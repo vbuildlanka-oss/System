@@ -65,6 +65,14 @@ export interface PriceListDoc {
    * the selling price only doubled what the file says.
    */
   needsCosts: boolean;
+  /**
+   * The prices came off a buyer's price list, so they are selling prices with
+   * the markup already in them. They are used exactly as they are, the markup
+   * starts at zero so nothing is added twice, and they are kept out of the
+   * remembered costs - a selling price filed as a cost would be marked up
+   * again on the next count.
+   */
+  pricesIncludeMarkup: boolean;
   updatedAt: string;
 }
 
@@ -76,6 +84,7 @@ export function emptyPriceListDoc(): PriceListDoc {
     markup: DEFAULT_MARKUP,
     rows: [],
     needsCosts: false,
+    pricesIncludeMarkup: false,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -119,6 +128,7 @@ export function fromParsedItems(
     orderNumber?: string;
     markup?: number;
     book?: PriceBook;
+    pricesIncludeMarkup?: boolean;
   } = {},
 ): PriceListDoc {
   const book = options.book;
@@ -131,6 +141,7 @@ export function fromParsedItems(
       options.markup === undefined ? DEFAULT_MARKUP : options.markup,
       LIMITS.markup,
     ),
+    pricesIncludeMarkup: options.pricesIncludeMarkup === true,
     needsCosts: kept.some(
       (item) => item.qty > 0 && clampNumber(item.perBag, LIMITS.money) <= 0,
     ),
@@ -318,6 +329,7 @@ export function parsePriceListDoc(input: unknown): PriceListDoc {
       typeof raw.needsCosts === "boolean"
         ? raw.needsCosts || rows.some((row) => row.costPerBag <= 0)
         : rows.some((row) => row.costPerBag <= 0 || row.remembered),
+    pricesIncludeMarkup: raw.pricesIncludeMarkup === true,
     updatedAt: String(raw.updatedAt ?? new Date().toISOString()),
   };
 }
