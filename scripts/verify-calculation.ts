@@ -197,6 +197,60 @@ section("Editing and removing");
   doc = updateCalcRow(doc, doc.rows[0].id, { qty: 7.8 });
   check(doc.rows[0].qty === 7, `bags stay whole things (${doc.rows[0].qty})`);
 
+  // Typed straight into the row: name, bags, cost.
+  const id = doc.rows[0].id;
+  doc = updateCalcRow(doc, id, { name: "  Ladies   Jeans 3/4 " });
+  check(doc.rows[0].name === "Ladies Jeans 3/4", `a name can be corrected, and is tidied (${doc.rows[0].name})`);
+  check(
+    updateCalcRow(doc, id, { name: "   " }).rows[0].name === "Ladies Jeans 3/4",
+    "a blank name is ignored rather than leaving a row that would vanish on reload",
+  );
+  check(
+    updateCalcRow(doc, id, { qty: 0 }).rows[0].qty === 7,
+    "no bags is refused: the row keeps its count",
+  );
+  check(
+    updateCalcRow(doc, id, { qty: 0.6 }).rows[0].qty === 7,
+    "and so is a fraction that rounds down to none",
+  );
+  check(updateCalcRow(doc, id, { qty: -3 }).rows[0].qty === 7, "and a negative count");
+  check(updateCalcRow(doc, id, { qty: 1 }).rows[0].qty === 1, "one bag is fine");
+  check(
+    updateCalcRow(doc, id, { qty: LIMITS.qty * 3 }).rows[0].qty === LIMITS.qty,
+    "a runaway bag count is capped",
+  );
+  check(
+    updateCalcRow(doc, id, { costPerBag: -5 }).rows[0].costPerBag === 0,
+    "a negative cost is clamped to nothing",
+  );
+  {
+    const markedUp = setRowMarkup(doc, id, 3_000);
+    const edited = updateCalcRow(markedUp, id, { qty: 10, costPerBag: 30_000, name: "Jeans" });
+    const row = edited.rows[0];
+    check(
+      row.markup === 3_000 && row.overridden && row.fast === markedUp.rows[0].fast,
+      "correcting bags, cost or name leaves the markup and its flags alone",
+    );
+    check(
+      sellingPerBag(row) === 33_000 && lineProfit(row) === 30_000 && lineTotal(row) === 330_000,
+      `and selling, profit and line total follow the new figures (${sellingPerBag(row)}, ${lineProfit(row)}, ${lineTotal(row)})`,
+    );
+    const t = calcTotals(edited);
+    check(
+      t.bags === calcTotals(markedUp).bags - 7 + 10 && t.cost + t.profit === t.selling,
+      `the totals follow too (${t.bags} bags)`,
+    );
+    const reloaded = parseCalcDoc(JSON.parse(JSON.stringify(edited)));
+    check(
+      reloaded.rows.length === edited.rows.length && reloaded.rows[0].name === "Jeans" && reloaded.rows[0].qty === 10,
+      "and an edited row survives saving and reloading",
+    );
+    check(
+      updateCalcRow(edited, "nope", { qty: 99 }).rows.every((r, i) => r.qty === edited.rows[i].qty),
+      "editing an unknown id changes nothing",
+    );
+  }
+
   doc = setOrderNumber(doc, "  Sri Lanka   Order 04 ");
   check(doc.orderNumber === "Sri Lanka Order 04", `the order number is tidied (${doc.orderNumber})`);
 

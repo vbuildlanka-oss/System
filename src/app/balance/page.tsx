@@ -58,8 +58,13 @@ import {
   saveBalanceSheet,
   updateExpense,
   updateTurnover,
+  todayIso,
+  EXPENSE_NAME_MAX,
+  NOTE_MAX,
+  ORDER_NUMBER_MAX,
   type BalanceSheet,
 } from "@/lib/balanceSheet";
+import { TextCell } from "@/components/EditCell";
 import {
   addImportedExpenses,
   markDuplicates,
@@ -972,14 +977,40 @@ export default function BalancePage() {
                   key={entry.id}
                   className="flex items-center justify-between gap-3 border-b border-gray-50 py-1.5 last:border-0"
                 >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className="font-mono text-xs text-gray-700">
-                      {entry.containerId}
-                    </span>
-                    <span className="truncate text-xs text-gray-400">
-                      {entry.at.slice(0, 10)}
-                      {entry.note ? ` · ${entry.note}` : ""}
-                    </span>
+                  <span className="flex min-w-0 flex-1 items-center gap-1">
+                    {/* Normalised like the add form; a blank keeps the old one. */}
+                    <TextCell
+                      value={entry.containerId}
+                      onCommit={(v) =>
+                        sheet &&
+                        persist(
+                          updateTurnover(sheet, entry.id, {
+                            containerId: v.toUpperCase(),
+                          }),
+                        )
+                      }
+                      label={`Container for turnover of ${formatLKR(entry.turnover)}`}
+                      maxLength={20}
+                      className="w-32 shrink-0 font-mono text-xs text-gray-700"
+                    />
+                    <DateCell
+                      at={entry.at}
+                      label={`Date of turnover for ${entry.containerId}`}
+                      onCommit={(day) =>
+                        sheet && persist(updateTurnover(sheet, entry.id, { at: day }))
+                      }
+                    />
+                    <TextCell
+                      value={entry.note}
+                      onCommit={(v) =>
+                        sheet && persist(updateTurnover(sheet, entry.id, { note: v }))
+                      }
+                      label={`Note on turnover for ${entry.containerId}`}
+                      allowEmpty
+                      maxLength={NOTE_MAX}
+                      placeholder="Add a note"
+                      className="min-w-0 flex-1 text-xs text-gray-500 placeholder:text-gray-300"
+                    />
                   </span>
                   <span className="flex shrink-0 items-center gap-2">
                     <input
@@ -1194,21 +1225,36 @@ export default function BalancePage() {
                     )}
                   >
                     <td className="px-5 py-2">
-                      <input
+                      {/* Kept as a draft while typing: the stored name is trimmed,
+                          which would otherwise eat the space before a second word. */}
+                      <TextCell
                         value={expense.name}
-                        onChange={(e) =>
-                          sheet &&
-                          persist(
-                            updateExpense(sheet, expense.id, {
-                              name: e.target.value,
-                            }),
-                          )
+                        onCommit={(v) =>
+                          sheet && persist(updateExpense(sheet, expense.id, { name: v }))
                         }
-                        className="w-full rounded-md border border-transparent bg-transparent px-2 py-1 font-medium text-gray-800 outline-none transition hover:border-gray-200 focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-100"
+                        label="Expense name"
+                        maxLength={EXPENSE_NAME_MAX}
+                        className="font-medium text-gray-800"
                       />
-                      <span className="block px-2 text-xs text-gray-400">
-                        {expense.at.slice(0, 10)}
-                        {expense.note ? ` · ${expense.note}` : ""}
+                      <span className="flex items-center gap-1">
+                        <DateCell
+                          at={expense.at}
+                          label={`Date of ${expense.name || "this expense"}`}
+                          onCommit={(day) =>
+                            sheet && persist(updateExpense(sheet, expense.id, { at: day }))
+                          }
+                        />
+                        <TextCell
+                          value={expense.note}
+                          onCommit={(v) =>
+                            sheet && persist(updateExpense(sheet, expense.id, { note: v }))
+                          }
+                          label={`Note on ${expense.name || "this expense"}`}
+                          allowEmpty
+                          maxLength={NOTE_MAX}
+                          placeholder="Add a note"
+                          className="min-w-0 flex-1 py-0.5 text-xs text-gray-500 placeholder:text-gray-300"
+                        />
                       </span>
                     </td>
                     <td className="px-2 py-2">
@@ -1474,13 +1520,13 @@ export default function BalancePage() {
             <table className="w-full min-w-[820px] text-left text-sm">
               <thead className="border-b border-gray-100 bg-gray-50/70 text-xs uppercase tracking-wide text-gray-500">
                 <tr>
-                  <th className="px-4 py-2 font-medium">Party</th>
+                  <th className="px-4 py-2 font-medium">Party / note</th>
                   <th className="px-2 py-2 font-medium">Direction</th>
                   <th className="px-2 py-2 text-right font-medium">Total</th>
                   <th className="px-2 py-2 text-right font-medium">Paid</th>
                   <th className="px-2 py-2 text-right font-medium">Outstanding</th>
                   <th className="px-2 py-2 font-medium">Due</th>
-                  <th className="px-2 py-2 font-medium">Container</th>
+                  <th className="px-2 py-2 font-medium">Container / order</th>
                   <th className="px-2 py-2" />
                 </tr>
               </thead>
@@ -1504,6 +1550,19 @@ export default function BalancePage() {
                             )
                           }
                           className="w-full rounded-md border border-transparent bg-transparent px-2 py-1 font-medium text-gray-900 outline-none transition hover:border-gray-200 focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-100"
+                        />
+                        {/* Under the party rather than its own column, so the table stays narrow. */}
+                        <TextCell
+                          value={balance.note}
+                          onCommit={(v) =>
+                            sheet &&
+                            persist(updateBalanceDue(sheet, balance.id, { note: v }))
+                          }
+                          label={`Note on the balance with ${balance.party || "this party"}`}
+                          allowEmpty
+                          maxLength={NOTE_MAX}
+                          placeholder="Add a note"
+                          className="py-0.5 text-xs text-gray-500 placeholder:text-gray-300"
                         />
                       </td>
                       <td className="px-2 py-2">
@@ -1611,6 +1670,20 @@ export default function BalancePage() {
                             )
                           }
                           className="w-32 rounded-md border border-transparent bg-transparent px-2 py-1 font-mono text-xs text-gray-700 outline-none transition hover:border-gray-200 focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-100"
+                        />
+                        <TextCell
+                          value={balance.orderNumber}
+                          onCommit={(v) =>
+                            sheet &&
+                            persist(
+                              updateBalanceDue(sheet, balance.id, { orderNumber: v }),
+                            )
+                          }
+                          label={`Order number for the balance with ${balance.party || "this party"}`}
+                          allowEmpty
+                          maxLength={ORDER_NUMBER_MAX}
+                          placeholder="Order no."
+                          className="w-32 py-0.5 text-xs text-gray-500 placeholder:text-gray-300"
                         />
                       </td>
                       <td className="px-2 py-2 text-right">
@@ -1824,6 +1897,38 @@ export default function BalancePage() {
 }
 
 /* ---------------------------- small components ---------------------------- */
+
+/**
+ * The day an entry was recorded. `at` is a full ISO timestamp; only the day is
+ * shown and changed (lib/balanceSheet editedAt keeps the time). No later than
+ * today, since adding an entry always stamps it with now. A cleared box is
+ * ignored rather than saved, so a half-typed date cannot wipe the old one.
+ */
+function DateCell({
+  at,
+  label,
+  onCommit,
+}: {
+  at: string;
+  label: string;
+  onCommit: (day: string) => void;
+}) {
+  const today = todayIso();
+  return (
+    <input
+      type="date"
+      value={at.slice(0, 10)}
+      max={today}
+      aria-label={label}
+      title="Date recorded"
+      onChange={(e) => {
+        const day = e.target.value;
+        if (day !== "" && day <= today) onCommit(day);
+      }}
+      className="w-[7.5rem] shrink-0 rounded-md border border-transparent bg-transparent px-1 py-0.5 text-xs text-gray-400 outline-none transition hover:border-gray-200 focus:border-brand-500 focus:bg-white focus:text-gray-700"
+    />
+  );
+}
 
 function Stat({
   label,

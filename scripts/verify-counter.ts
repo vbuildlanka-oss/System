@@ -29,11 +29,14 @@ import {
   loadCountDoc,
   parseCountDoc,
   removeRow,
+  renameClash,
+  renameRow,
   resetCounts,
   resetTally,
   searchRows,
   setContainer,
   setCount,
+  setExpected,
   setOrderNumber,
   MAX_ROWS,
   type CountDoc,
@@ -285,6 +288,72 @@ section("Adding an item found on the floor");
   removed = removeRow(removed, added.row!.id);
   check(removed.rows.length === 4, "an added item can be removed");
   check(removeRow(removed, "nope").rows.length === 4, "removing an unknown id changes nothing");
+}
+
+section("Correcting a name or the expected figure");
+{
+  let doc = sample();
+  const jeans = doc.rows[0];
+  doc = addToCount(doc, jeans.id, 3);
+
+  const renamed = renameRow(doc, jeans.id, "  Ladies   Jeans 3/4 ");
+  const row = renamed.rows.find((r) => r.id === jeans.id)!;
+  check(row.name === "Ladies Jeans 3/4", `a row can be renamed, and the name is tidied (${row.name})`);
+  check(row.counted === 3 && row.touched, "its count and touched state are untouched");
+  check(row.expected === 14, "and so is what was expected");
+  check(renamed.rows.length === 4, "no row is added or lost");
+
+  // The same rule as addItem: two rows for one item would split its count.
+  const anorak2 = doc.rows[2];
+  const dup = renameRow(doc, anorak2.id, "anorak");
+  check(dup === doc, "renaming onto another row's name is refused, the count comes back unchanged");
+  check(
+    renameClash(doc, anorak2.id, "anorak")?.id === doc.rows[1].id,
+    "and the clash names the row in the way",
+  );
+  check(
+    renameRow(doc, jeans.id, "Anorak (2)") === doc,
+    "a name that only differs by punctuation still counts as a duplicate",
+  );
+  const self = renameRow(doc, anorak2.id, "Anorak 2");
+  check(
+    self !== doc && self.rows[2].name === "Anorak 2",
+    "respelling a row as itself is allowed",
+  );
+  check(renameClash(doc, anorak2.id, "Anorak 2") === null, "and is not reported as a clash");
+  check(renameRow(doc, jeans.id, "   ") === doc, "a blank name is refused");
+  check(renameRow(doc, "nope", "Something") === doc, "renaming an unknown id changes nothing");
+  check(
+    searchRows(renamed, "ladies jeans")[0]?.id === jeans.id,
+    "a renamed row is found by its new name",
+  );
+
+  const expected = setExpected(doc, jeans.id, 20);
+  const er = expected.rows[0];
+  check(er.expected === 20, `the expected figure can be corrected (${er.expected})`);
+  check(er.counted === 3 && er.touched, "without touching the count");
+  check(difference(er) === -17 && countStatus(er) === "short", "and the difference follows");
+  check(countTotals(expected).expected === 20 + 21 + 9 + 6, "as do the totals");
+  check(setExpected(doc, jeans.id, 7.9).rows[0].expected === 7, "expected bags are whole things");
+  check(setExpected(doc, jeans.id, -4).rows[0].expected === 0, "and never below zero");
+  check(
+    setExpected(doc, jeans.id, LIMITS.qty * 2).rows[0].expected === LIMITS.qty,
+    "and capped like any count",
+  );
+  check(setExpected(doc, "nope", 5) === doc, "setting expected on an unknown id changes nothing");
+  const fresh = sample();
+  const untouched = setExpected(fresh, fresh.rows[0].id, 5);
+  check(untouched.rows[0].expected === 5, "a row nobody has reached can have its expected figure corrected");
+  check(
+    !untouched.rows[0].touched && countStatus(untouched.rows[0]) === "uncounted",
+    "and correcting what was expected does not count as counting it",
+  );
+
+  const reloaded = parseCountDoc(JSON.parse(JSON.stringify(setExpected(renamed, jeans.id, 20))));
+  check(
+    reloaded.rows[0].name === "Ladies Jeans 3/4" && reloaded.rows[0].expected === 20,
+    "both corrections survive saving and reloading",
+  );
 }
 
 section("Container and order");

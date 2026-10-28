@@ -328,11 +328,20 @@ export function setFastMarkup(doc: CalcDoc, markup: number): CalcDoc {
   });
 }
 
+/**
+ * Correct a row's name, bags or cost (or anything else on it).
+ *
+ * A blank name or a bag count below one is ignored and the row keeps what it
+ * had: a row with either would be dropped the next time the calculation is
+ * loaded, so accepting it would quietly lose the line.
+ */
 export function updateCalcRow(
   doc: CalcDoc,
   id: string,
   patch: Partial<Omit<CalcRow, "id">>,
 ): CalcDoc {
+  const keepIfBlank = (next: string, prev: string) => (next === "" ? prev : next);
+  const keepIfNoBags = (next: number, prev: number) => (next < 1 ? prev : next);
   return touch(doc, {
     rows: doc.rows.map((row) =>
       row.id === id
@@ -342,11 +351,14 @@ export function updateCalcRow(
             name:
               patch.name === undefined
                 ? row.name
-                : sanitizeLine(patch.name, LIMITS.itemName),
+                : keepIfBlank(sanitizeLine(patch.name, LIMITS.itemName), row.name),
             qty:
               patch.qty === undefined
                 ? row.qty
-                : Math.floor(clampNumber(patch.qty, LIMITS.qty)),
+                : keepIfNoBags(
+                    Math.floor(clampNumber(patch.qty, LIMITS.qty)),
+                    row.qty,
+                  ),
             costPerBag:
               patch.costPerBag === undefined
                 ? row.costPerBag

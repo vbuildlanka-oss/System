@@ -220,6 +220,33 @@ function isoOrNow(value: unknown): string {
   return Number.isFinite(time) ? new Date(time).toISOString() : new Date().toISOString();
 }
 
+/**
+ * A new recorded date for an entry that already has one.
+ *
+ * `at` stays a full ISO timestamp. A plain "2026-08-20" from a date box only
+ * replaces the day, so the time it was first recorded survives and the entry
+ * keeps its place among others on the same day. Anything unreadable, and any day
+ * after today, keeps the old date: an entry is recorded when it happens, which
+ * is why adding one stamps it with now.
+ */
+export function editedAt(previous: string, value: unknown, today = todayIso()): string {
+  let next: string | null = null;
+  const text = typeof value === "string" ? value.trim() : "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const keepTime = /^\d{4}-\d{2}-\d{2}T/.test(previous) ? previous.slice(10) : "T00:00:00.000Z";
+    const time = Date.parse(`${text}${keepTime}`);
+    // Date.parse rolls 2026-02-31 over to March; refuse it rather than move it.
+    if (Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === text) {
+      next = new Date(time).toISOString();
+    }
+  } else if (text !== "") {
+    const time = Date.parse(text);
+    if (Number.isFinite(time)) next = new Date(time).toISOString();
+  }
+  if (next === null || next.slice(0, 10) > today) return previous;
+  return next;
+}
+
 /* -------------------------------- validation ------------------------------ */
 
 export interface ExpenseCheck {
@@ -664,6 +691,8 @@ export function updateExpense(
               patch.containerId === undefined
                 ? e.containerId
                 : normalizeContainerNumber(patch.containerId),
+            at: patch.at === undefined ? e.at : editedAt(e.at, patch.at),
+            note: patch.note === undefined ? e.note : sanitizeLine(patch.note, NOTE_MAX),
           }
         : e,
     ),
@@ -694,14 +723,18 @@ export function updateTurnover(
         ? {
             ...t,
             ...patch,
+            // Turnover always belongs to a container (checkTurnover), so a blank
+            // edit keeps the one it had rather than orphaning the money.
             containerId:
               patch.containerId === undefined
                 ? t.containerId
-                : normalizeContainerNumber(patch.containerId),
+                : normalizeContainerNumber(patch.containerId) || t.containerId,
             turnover:
               patch.turnover === undefined
                 ? t.turnover
                 : clampNumber(patch.turnover, LIMITS.money),
+            at: patch.at === undefined ? t.at : editedAt(t.at, patch.at),
+            note: patch.note === undefined ? t.note : sanitizeLine(patch.note, NOTE_MAX),
           }
         : t,
     ),

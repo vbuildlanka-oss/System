@@ -38,6 +38,11 @@ import {
   setMarkup as setDocMarkup,
   setOrderNumber as setDocOrderNumber,
   setRowCost,
+  setRowName,
+  setRowQty,
+  setRowSellingPrice,
+  sellingPriceProblem,
+  addRow,
   toOrderItems,
   DEFAULT_MARKUP,
   type PriceListDoc,
@@ -59,6 +64,7 @@ import {
   type Buyer,
 } from "@/lib/buyer";
 import BuyerFields from "@/components/BuyerFields";
+import { NumberCell, TextCell } from "@/components/EditCell";
 import { cn } from "@/lib/cn";
 import UndoToast, { useUndo } from "@/components/UndoToast";
 import { useFind } from "@/lib/useFind";
@@ -92,6 +98,10 @@ export default function Home() {
   useFind(setRowSearch);
   /** Show only the rows still waiting for a cost, to work through them. */
   const [onlyMissing, setOnlyMissing] = useState(false);
+  // Adding an item by hand.
+  const [newName, setNewName] = useState("");
+  const [newQty, setNewQty] = useState("");
+  const [newPrice, setNewPrice] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Pick up an unfinished sheet, and what we last paid for things.
@@ -228,6 +238,25 @@ export default function Home() {
     },
     [handleFile],
   );
+
+  const addItem = useCallback(() => {
+    if (!doc) return;
+    try {
+      const next = addRow(doc, {
+        name: newName,
+        qty: Number(newQty),
+        perBag: Number(newPrice.replace(/[,\s]/g, "")),
+      });
+      persist(next);
+      setNotice(`${newName.trim()} added.`);
+      setError(null);
+      setNewName("");
+      setNewQty("");
+      setNewPrice("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "That item could not be added.");
+    }
+  }, [doc, newName, newQty, newPrice, persist]);
 
   const download = useCallback(async () => {
     if (!doc) return;
@@ -598,11 +627,13 @@ export default function Home() {
                   onChange={(e) => setRowSearch(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Escape") setRowSearch("");
-                    // Enter jumps into the first matching cost, ready to type.
+                    // Enter jumps into the first matching price, ready to type.
                     if (e.key === "Enter") {
                       e.preventDefault();
                       document
-                        .querySelector<HTMLInputElement>('[data-col="cost"]')
+                        .querySelector<HTMLInputElement>(
+                          showCost ? '[data-col="cost"]' : '[data-col="per-bag"]',
+                        )
                         ?.focus();
                     }
                   }}
@@ -672,9 +703,24 @@ export default function Home() {
                           needsPrice && "bg-amber-50/70 hover:bg-amber-50",
                         )}
                       >
-                        <td className="px-4 py-2.5 text-gray-800">{row.name}</td>
-                        <td className="px-4 py-2.5 text-center text-gray-600">
-                          {row.qty}
+                        <td className="px-2 py-1.5 text-gray-800">
+                          <TextCell
+                            value={row.name}
+                            col="name"
+                            label={`Name of ${row.name}`}
+                            onCommit={(name) => persist(setRowName(doc, row.id, name))}
+                          />
+                        </td>
+                        <td className="w-24 px-2 py-1.5">
+                          <NumberCell
+                            value={row.qty}
+                            col="qty"
+                            integer
+                            min={1}
+                            label={`Bags of ${row.name}`}
+                            onCommit={(n) => persist(setRowQty(doc, row.id, n))}
+                            className="text-center text-gray-700"
+                          />
                         </td>
                         {showCost && (
                         <td className="px-4 py-1.5 text-right">
@@ -711,19 +757,50 @@ export default function Home() {
                           )}
                         </td>
                         )}
-                        <td className="px-4 py-2.5 text-right font-medium text-gray-900">
-                          {needsPrice ? (
-                            <span className="text-amber-700">&mdash;</span>
-                          ) : (
-                            formatLKR(sellingPerBag(row, markup))
-                          )}
+                        {/* What the buyer pays. Typing here sets the cost
+                            underneath to this less the markup. */}
+                        <td className="w-36 px-2 py-1.5">
+                          <NumberCell
+                            value={needsPrice ? 0 : sellingPerBag(row, markup)}
+                            blankWhenZero
+                            col="per-bag"
+                            format={formatLKR}
+                            placeholder={needsPrice ? "price" : undefined}
+                            label={`Price per bag of ${row.name}`}
+                            check={(n) => sellingPriceProblem(doc, n)}
+                            onReject={setError}
+                            onCommit={(n) => persist(setRowSellingPrice(doc, row.id, n))}
+                            className={cn(
+                              "font-medium text-gray-900",
+                              needsPrice && "border-amber-400 bg-white",
+                            )}
+                          />
                         </td>
-                        <td className="px-4 py-2.5 text-right font-medium text-gray-900">
-                          {needsPrice ? (
-                            <span className="text-amber-700">&mdash;</span>
-                          ) : (
-                            formatLKR(row.qty * sellingPerBag(row, markup))
-                          )}
+                        {/* Typing a line total works the price per bag back from it. */}
+                        <td className="w-40 px-2 py-1.5">
+                          <NumberCell
+                            value={needsPrice ? 0 : row.qty * sellingPerBag(row, markup)}
+                            blankWhenZero
+                            col="total"
+                            format={formatLKR}
+                            label={`Line total for ${row.name}`}
+                            check={(n) =>
+                              row.qty > 0
+                                ? sellingPriceProblem(doc, n / row.qty)
+                                : "Set the bags first."
+                            }
+                            onReject={setError}
+                            onCommit={(n) =>
+                              persist(
+                                setRowSellingPrice(
+                                  doc,
+                                  row.id,
+                                  Math.round((n / row.qty) * 100) / 100,
+                                ),
+                              )
+                            }
+                            className="font-medium text-gray-900"
+                          />
                         </td>
                         <td className="px-2 py-2.5 text-right">
                           <button
@@ -740,6 +817,51 @@ export default function Home() {
                       </tr>
                     );
                   })}
+                  {/* Add an item that is not on the file */}
+                  <tr className="border-b border-gray-100 bg-gray-50/80">
+                    <td className="px-2 py-1.5">
+                      <input
+                        value={newName}
+                        onChange={(e) => setNewName(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && addItem()}
+                        maxLength={LIMITS.itemName}
+                        placeholder="Add an item..."
+                        aria-label="New item name"
+                        className="w-full rounded-md border border-gray-300 bg-white px-2 py-1 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                      />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <input
+                        value={newQty}
+                        onChange={(e) => setNewQty(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && addItem()}
+                        inputMode="numeric"
+                        placeholder="Bags"
+                        aria-label="New item bags"
+                        className="w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-center outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                      />
+                    </td>
+                    {showCost && <td />}
+                    <td className="px-2 py-1.5">
+                      <input
+                        value={newPrice}
+                        onChange={(e) => setNewPrice(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && addItem()}
+                        inputMode="decimal"
+                        placeholder="Per bag"
+                        aria-label="New item price per bag"
+                        className="w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-right outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                      />
+                    </td>
+                    <td className="px-2 py-1.5" colSpan={2}>
+                      <button
+                        onClick={addItem}
+                        className="w-full rounded-md bg-brand-600 px-3 py-1 text-sm font-semibold text-white transition hover:bg-brand-700"
+                      >
+                        Add
+                      </button>
+                    </td>
+                  </tr>
                 </tbody>
                 <tfoot className="sticky bottom-0 bg-brand-100 font-bold text-gray-900">
                   <tr>

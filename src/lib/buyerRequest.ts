@@ -462,6 +462,44 @@ export function markSupplied(
 }
 
 /**
+ * Edit one line in place: its note, or the bags supplied typed in directly.
+ *
+ * Like markSupplied this only records - it never touches the stockpile, which
+ * is supplyFromStockpile's job. Supplied is a whole number held to 0..qty, so
+ * outstanding (always derived) cannot go negative; a figure that is not a number
+ * at all keeps the old one rather than wiping it. The note is cleaned exactly as
+ * a new line's is. An unknown line returns the request untouched.
+ */
+export function updateRequestItem(
+  request: BuyerRequest,
+  itemId: string,
+  patch: { note?: unknown; supplied?: unknown },
+): BuyerRequest {
+  const item = request.items.find((i) => i.id === itemId);
+  if (!item) return request;
+
+  let supplied = item.supplied;
+  if (patch.supplied !== undefined) {
+    const raw =
+      typeof patch.supplied === "number" ||
+      (typeof patch.supplied === "string" && patch.supplied.trim() !== "")
+        ? Number(patch.supplied)
+        : NaN;
+    if (Number.isFinite(raw)) {
+      supplied = Math.min(item.qty, Math.max(0, Math.floor(raw)));
+    }
+  }
+  const note = patch.note === undefined ? item.note : sanitizeLine(patch.note, 120);
+  if (supplied === item.supplied && note === item.note) return request;
+
+  return {
+    ...request,
+    items: request.items.map((i) => (i.id === itemId ? { ...i, supplied, note } : i)),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/**
  * Supply bags from the stockpile: takes them out of stock (oldest batch first)
  * and records them against the request in one step, so the two cannot drift
  * apart. Throws before changing anything if the numbers do not work.

@@ -24,8 +24,10 @@ import {
   parseStockpile,
   planWithdrawal,
   removeEmptyItems,
+  renameItem,
   stockpileTotals,
   toCsv,
+  updateLot,
   withdraw,
   type Stockpile,
 } from "../src/lib/stockpile";
@@ -254,6 +256,198 @@ check(
   removeEmptyItems(drained).items.length === 0,
   "tidy up removes emptied items",
 );
+
+/* ------------------------------ in-place edits ----------------------------- */
+section("Renaming items in place");
+let sp3 = addLots(
+  emptyStockpile(),
+  [
+    { name: "Blanket", bags: 5, perBag: 20000, source: "Order 3" },
+    { name: "Bed Sheet", bags: 4, perBag: 34000, source: "Order 3" },
+  ],
+  daysAgo(40),
+).stockpile;
+const sheetId = sp3.items.find((i) => i.key === "bed sheet")!.id;
+const blanketId = sp3.items.find((i) => i.key === "blanket")!.id;
+
+const renamed = renameItem(sp3, sheetId, "  Bed   Sheets  ");
+const sheetAfter = renamed.items.find((i) => i.id === sheetId)!;
+check(
+  sheetAfter.name === "Bed Sheets" && sheetAfter.key === normalizeItemKey("Bed Sheets"),
+  "a rename tidies spacing and updates the matching key",
+);
+check(
+  addLots(renamed, [{ name: "bed sheets", bags: 1, perBag: 34000, source: "X" }], NOW)
+    .stockpile.items.length === 2,
+  "a later import of the new name lands on the renamed item",
+);
+check(renameItem(sp3, sheetId, "   ") === sp3, "a blank name keeps the old one");
+check(renameItem(sp3, sheetId, "Bed Sheet") === sp3, "an unchanged name changes nothing");
+check(
+  renameItem(sp3, sheetId, "BED SHEET").items.find((i) => i.id === sheetId)!.name ===
+    "BED SHEET",
+  "an item can be renamed to a different spelling of itself",
+);
+threw = false;
+let renameMsg = "";
+try {
+  renameItem(sp3, sheetId, "blanket #");
+} catch (e) {
+  threw = true;
+  renameMsg = e instanceof Error ? e.message : "";
+}
+check(threw, "renaming onto another item's name is refused");
+check(/Merge/.test(renameMsg), "the refusal points at Merge");
+check(
+  sp3.items.filter((i) => i.key === "blanket").length === 1,
+  "the refused rename left the stockpile as it was",
+);
+
+section("Correcting a batch in place");
+const lot3 = () => sp3.items.find((i) => i.id === blanketId)!.lots[0];
+const lotId = lot3().id;
+const historyBefore = sp3.history.length;
+const at = (s: number) => new Date(NOW.getTime() + s * 1000);
+
+// Typing "12" over "5": the field commits 1, then 12 - one correction, 5 -> 12.
+sp3 = updateLot(sp3, blanketId, lotId, { bags: 1 }, at(0));
+sp3 = updateLot(sp3, blanketId, lotId, { bags: 12 }, at(1));
+const blanket3 = sp3.items.find((i) => i.id === blanketId)!;
+check(lot3().bags === 12, "the batch now holds 12 bags");
+check(
+  itemBags(blanket3) === 12 && itemValue(blanket3) === 12 * 20000,
+  "item bags and value follow the correction",
+);
+check(stockpileTotals(sp3, NOW).bags === 12 + 4, "the stockpile total follows the correction");
+check(sp3.history.length === historyBefore + 1, "keystrokes fold into one history entry");
+const corr = sp3.history[0];
+check(
+  corr.kind === "in" && corr.bags === 7 && corr.value === 7 * 20000,
+  "the correction is logged as the 7 bags of difference, at the batch price",
+);
+check(
+  corr.correction?.from === 5 && corr.correction?.to === 12 && /correct/i.test(corr.reason),
+  "the entry is marked as a correction from 5 to 12",
+);
+
+// Back to 5 within the window nets to nothing: the entry goes.
+sp3 = updateLot(sp3, blanketId, lotId, { bags: 5 }, at(2));
+check(sp3.history.length === historyBefore, "a correction undone by hand leaves no entry");
+
+// A later correction is a new entry; a decrease is logged as out.
+sp3 = updateLot(sp3, blanketId, lotId, { bags: 3 }, at(600));
+check(
+  sp3.history.length === historyBefore + 1 &&
+    sp3.history[0].kind === "out" &&
+    sp3.history[0].bags === 2,
+  "a lower count is logged as 2 bags out",
+);
+sp3 = updateLot(sp3, blanketId, lotId, { bags: 4 }, at(1200));
+check(
+  sp3.history.length === historyBefore + 2,
+  "a correction after the window is a new entry",
+);
+
+threw = false;
+try {
+  updateLot(sp3, blanketId, lotId, { bags: 0 }, at(1300));
+} catch {
+  threw = true;
+}
+check(threw, "a batch cannot be corrected to 0 bags (withdraw instead)");
+check(
+  updateLot(sp3, blanketId, lotId, { bags: 4.7 }, at(1300)) === sp3,
+  "bags are whole: 4.7 is 4, which is no change",
+);
+
+// Price, source and date move no bags, so they are not logged.
+const hist = sp3.history.length;
+sp3 = updateLot(sp3, blanketId, lotId, { perBag: 21000 }, at(1400));
+check(lot3().perBag === 21000, "price per bag corrected");
+check(
+  itemValue(sp3.items.find((i) => i.id === blanketId)!) === 4 * 21000,
+  "item value follows the new price",
+);
+check(
+  updateLot(sp3, blanketId, lotId, { perBag: -50 }, at(1400)).items.find(
+    (i) => i.id === blanketId,
+  )!.lots[0].perBag === 0,
+  "a negative price is clamped to 0",
+);
+sp3 = updateLot(sp3, blanketId, lotId, { source: "  Order\n 4  " }, at(1400));
+check(lot3().source === "Order 4", "source is tidied (control characters, spacing)");
+check(
+  updateLot(sp3, blanketId, lotId, { source: "x".repeat(500) }, at(1400)).items.find(
+    (i) => i.id === blanketId,
+  )!.lots[0].source.length === 120,
+  "source is capped at 120 characters",
+);
+check(sp3.history.length === hist, "price and source edits are not logged as movements");
+
+check(itemAgeDays(sp3.items.find((i) => i.id === blanketId)!, NOW) === 40, "batch is 40 days old");
+sp3 = updateLot(sp3, blanketId, lotId, { addedOn: "2026-04-01" }, NOW);
+check(lot3().addedAt === "2026-04-01T12:00:00.000Z", "a new date is stored as an ISO timestamp");
+check(
+  // Midday on 1 April to 10:00 on 9 August: 129 whole days.
+  itemAgeDays(sp3.items.find((i) => i.id === blanketId)!, NOW) === 129,
+  "the age follows the new date (129 days)",
+);
+check(
+  stockpileTotals(sp3, NOW).byBucket.dead.bags === 4,
+  "the ageing buckets follow the new date",
+);
+check(
+  toCsv(sp3, NOW).includes("2026-04-01"),
+  "the CSV export carries the corrected date",
+);
+const todayMorning = new Date("2026-08-09T06:00:00.000Z");
+const today = updateLot(sp3, blanketId, lotId, { addedOn: "2026-08-09" }, todayMorning);
+const todayLot = today.items.find((i) => i.id === blanketId)!.lots[0];
+check(
+  todayLot.addedAt.slice(0, 10) === "2026-08-09" &&
+    todayLot.addedAt <= todayMorning.toISOString(),
+  "today's date is allowed but never stamped later than now",
+);
+for (const [bad, why] of [
+  ["2026-08-10", "a date in the future"],
+  ["2026-02-30", "a date that does not exist"],
+  ["0202-08-09", "a half-typed year"],
+  ["", "an empty date"],
+  ["09/08/2026", "a date in the wrong format"],
+] as const) {
+  threw = false;
+  try {
+    updateLot(sp3, blanketId, lotId, { addedOn: bad }, NOW);
+  } catch {
+    threw = true;
+  }
+  check(threw, `${why} is refused`);
+}
+check(
+  updateLot(sp3, blanketId, lotId, { addedOn: "2026-04-01" }, NOW) === sp3,
+  "the same date again changes nothing (time of day kept)",
+);
+check(sp3.history.length === hist, "date edits are not logged as movements");
+
+threw = false;
+try {
+  updateLot(sp3, blanketId, "no-such-lot", { bags: 2 }, NOW);
+} catch {
+  threw = true;
+}
+check(threw, "an unknown batch is reported, not ignored");
+
+const reparsed = parseStockpile(JSON.parse(JSON.stringify(sp3)));
+check(
+  reparsed.history.some((m) => m.correction?.lotId === lotId),
+  "corrections survive saving and loading",
+);
+
+let capped = sp3;
+for (let k = 0; k < MAX_HISTORY + 5; k += 1) {
+  capped = updateLot(capped, blanketId, lotId, { bags: k % 2 === 0 ? 9 : 4 }, at(5000 + k * 600));
+}
+check(capped.history.length === MAX_HISTORY, `corrections respect the ${MAX_HISTORY}-entry cap`);
 
 /* ---------------------------- file round-tripping -------------------------- */
 section("File storage");

@@ -34,9 +34,15 @@ import {
 import type { ParsedOrder } from "@/lib/types";
 import type { RestoredLot, Restore } from "@/lib/restoreTypes";
 import UndoToast, { useUndo } from "@/components/UndoToast";
-import { formatLKR } from "@/lib/types";
+import { NumberCell, TextCell } from "@/components/EditCell";
+import { formatLKR, LIMITS } from "@/lib/types";
 import {
   AGE_BUCKETS,
+  LOT_DATE_MIN,
+  lotDateMax,
+  renameItem,
+  updateLot,
+  type LotPatch,
   addLots,
   ageBucket,
   describeBags,
@@ -459,6 +465,48 @@ export default function StockpilePage() {
     setNotice("Stockpile cleared.");
   }, [sp, remember]);
 
+  /*
+   * In-place edits (item name, and a batch's source, bags, price and date).
+   * They apply as they are typed, so they take no undo step - that would be one
+   * step per keystroke. A bag correction is written to the movement history
+   * instead (see updateLot). An error from an edit is shown in the page's
+   * banner and cleared by the next edit that succeeds; other errors are left.
+   */
+  const editError = useRef<string | null>(null);
+  const runEdit = useCallback(
+    (change: () => Stockpile, quiet = false): boolean => {
+      try {
+        const next = change();
+        if (next !== sp) apply(next);
+        const last = editError.current;
+        if (last !== null) {
+          editError.current = null;
+          setError((cur) => (cur === last ? null : cur));
+        }
+        return true;
+      } catch (e) {
+        if (!quiet) {
+          const msg = e instanceof Error ? e.message : "That change could not be made.";
+          editError.current = msg;
+          setError(msg);
+        }
+        return false;
+      }
+    },
+    [sp, apply],
+  );
+
+  const editName = useCallback(
+    (item: StockItem, name: string) => runEdit(() => renameItem(sp, item.id, name)),
+    [sp, runEdit],
+  );
+
+  const editLot = useCallback(
+    (item: StockItem, lotId: string, patch: LotPatch, quiet = false) =>
+      runEdit(() => updateLot(sp, item.id, lotId, patch), quiet),
+    [sp, runEdit],
+  );
+
   const tidyUp = useCallback(() => {
     const before = sp.items.length;
     const next = removeEmptyItems(sp);
@@ -820,13 +868,21 @@ export default function StockpilePage() {
                           </button>
                         </td>
                         <td className="px-3 py-2">
-                          <span className="font-medium text-gray-800">
-                            {item.name}
-                          </span>
-                          <span className="ml-2 text-xs text-gray-400">
-                            {item.lots.length} batch
-                            {item.lots.length === 1 ? "" : "es"}
-                          </span>
+                          {/* Expanding stays on the chevron, so the name is free to type in. */}
+                          <div className="-ml-2 flex items-center gap-2">
+                            <TextCell
+                              value={item.name}
+                              label={`Name of ${item.name}`}
+                              col="stock-name"
+                              maxLength={LIMITS.itemName}
+                              onCommit={(name) => editName(item, name)}
+                              className="min-w-0 flex-1 font-medium text-gray-800"
+                            />
+                            <span className="shrink-0 text-xs text-gray-400">
+                              {item.lots.length} batch
+                              {item.lots.length === 1 ? "" : "es"}
+                            </span>
+                          </div>
                         </td>
                         <td className="px-2 py-2 text-center font-medium">
                           {bags}
@@ -953,20 +1009,56 @@ export default function StockpilePage() {
                                           key={lot.id}
                                           className="border-t border-gray-200 text-gray-700"
                                         >
-                                          <td className="py-1.5">
-                                            {lot.source || "Added manually"}
+                                          <td className="py-1 pr-1">
+                                            <TextCell
+                                              value={lot.source}
+                                              label={`Source of a ${item.name} batch`}
+                                              col="lot-source"
+                                              allowEmpty
+                                              maxLength={LIMITS.title}
+                                              placeholder="Added manually"
+                                              onCommit={(source) =>
+                                                editLot(item, lot.id, { source })
+                                              }
+                                              className="-ml-2 py-0.5"
+                                            />
                                           </td>
-                                          <td className="py-1.5 text-center">
-                                            {lot.bags}
+                                          <td className="w-20 px-1 py-1">
+                                            <NumberCell
+                                              value={lot.bags}
+                                              label={`Bags in a ${item.name} batch`}
+                                              col="lot-bags"
+                                              integer
+                                              min={1}
+                                              onCommit={(bags) =>
+                                                editLot(item, lot.id, { bags })
+                                              }
+                                              className="py-0.5 text-center"
+                                            />
                                           </td>
-                                          <td className="py-1.5 text-right">
-                                            {formatLKR(lot.perBag)}
+                                          <td className="w-28 px-1 py-1">
+                                            <NumberCell
+                                              value={lot.perBag}
+                                              label={`Price per bag of a ${item.name} batch`}
+                                              col="lot-perbag"
+                                        format={formatLKR}
+                                              onCommit={(perBag) =>
+                                                editLot(item, lot.id, { perBag })
+                                              }
+                                              className="py-0.5"
+                                            />
                                           </td>
                                           <td className="py-1.5 text-right">
                                             {formatLKR(lot.bags * lot.perBag)}
                                           </td>
-                                          <td className="py-1.5 text-center">
-                                            {lot.addedAt.slice(0, 10)}
+                                          <td className="w-36 px-1 py-1 text-center">
+                                            <DateCell
+                                              value={lot.addedAt.slice(0, 10)}
+                                              label={`Date a ${item.name} batch was added`}
+                                              onCommit={(addedOn, quiet) =>
+                                                editLot(item, lot.id, { addedOn }, quiet)
+                                              }
+                                            />
                                           </td>
                                           <td className="py-1.5 text-center">
                                             {d}d
@@ -1198,6 +1290,55 @@ export default function StockpilePage() {
 }
 
 /* ---------------------------- small components ---------------------------- */
+
+/**
+ * A batch's date, typed in place. Like the shared cells it keeps a draft while
+ * focused: typing a year digit by digit passes through 0002, 0020 and 0202,
+ * which are tried quietly and refused, so only the finished date lands. If what
+ * is left on blur still cannot be used, the reason is shown and the field goes
+ * back to the saved date.
+ */
+function DateCell({
+  value,
+  label,
+  onCommit,
+}: {
+  value: string;
+  label: string;
+  /** Returns whether the date was accepted; `quiet` suppresses the error. */
+  onCommit: (day: string, quiet: boolean) => boolean;
+}) {
+  const [draft, setDraft] = useState(value);
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!focused.current) setDraft(value);
+  }, [value]);
+  return (
+    <input
+      type="date"
+      aria-label={label}
+      value={draft}
+      min={LOT_DATE_MIN}
+      max={lotDateMax()}
+      onFocus={() => {
+        focused.current = true;
+      }}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        if (e.target.value) onCommit(e.target.value, true);
+      }}
+      onBlur={() => {
+        focused.current = false;
+        if (draft !== value) onCommit(draft, false);
+        setDraft(value);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape" || e.key === "Enter") e.currentTarget.blur();
+      }}
+      className="w-full rounded-md border border-transparent bg-transparent px-1 py-0.5 text-center tabular-nums outline-none transition hover:border-gray-200 focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-100"
+    />
+  );
+}
 
 const inputCls =
   "w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100";

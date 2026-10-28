@@ -36,10 +36,12 @@ import {
   setOrderNumber,
   setRowMarkup,
   toggleFast,
+  updateCalcRow,
   DEFAULT_MARKUP,
   type CalcDoc,
   fromRestoredRows,
 } from "@/lib/calculation";
+import { NumberCell, TextCell } from "@/components/EditCell";
 import { shipmentFromFilename } from "@/lib/shipment";
 import { cn } from "@/lib/cn";
 import UndoToast, { useUndo } from "@/components/UndoToast";
@@ -515,14 +517,44 @@ export default function CalculationPage() {
                         row.fast && "bg-amber-50/40",
                       )}
                     >
-                      <td className="px-4 py-2 font-medium text-gray-900">
-                        {row.name}
+                      {/* px-2 here plus the cell's own px-2 lines the text up with the heading. */}
+                      <td className="px-2 py-2">
+                        <TextCell
+                          value={row.name}
+                          col="name"
+                          label={`Item name for ${row.name}`}
+                          maxLength={LIMITS.itemName}
+                          onCommit={(name) =>
+                            doc && persist(updateCalcRow(doc, row.id, { name }))
+                          }
+                          className="min-w-[12rem] font-medium text-gray-900"
+                        />
                       </td>
-                      <td className="px-2 py-2 text-right tabular-nums text-gray-600">
-                        {row.qty}
+                      <td className="px-2 py-2 text-right">
+                        <NumberCell
+                          value={row.qty}
+                          col="bags"
+                          integer
+                          min={1}
+                          label={`Bags of ${row.name}`}
+                          onCommit={(qty) =>
+                            doc && persist(updateCalcRow(doc, row.id, { qty }))
+                          }
+                          className="w-20 text-gray-700"
+                        />
                       </td>
-                      <td className="px-2 py-2 text-right tabular-nums text-gray-600">
-                        {formatLKR(row.costPerBag)}
+                      <td className="px-2 py-2 text-right">
+                        <NumberCell
+                          value={row.costPerBag}
+                          col="cost"
+                          format={formatLKR}
+                          label={`Cost per bag for ${row.name}`}
+                          onCommit={(costPerBag) =>
+                            doc &&
+                            persist(updateCalcRow(doc, row.id, { costPerBag }))
+                          }
+                          className="w-28 text-gray-700"
+                        />
                       </td>
                       <td className="px-2 py-2 text-right">
                         <div className="flex items-center justify-end gap-1">

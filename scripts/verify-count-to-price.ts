@@ -39,6 +39,10 @@ import {
   setOrderNumber,
   setRowCost,
   setRowQty,
+  setRowName,
+  setRowSellingPrice,
+  sellingPriceProblem,
+  addRow,
   toOrderItems,
   DEFAULT_MARKUP,
   MAX_ROWS,
@@ -517,6 +521,51 @@ async function main() {
   mkdirSync(".verify", { recursive: true });
   writeFileSync(".verify/bag-count.pdf", countPdf);
   writeFileSync(".verify/buyer-from-count.pdf", buyerPdf);
+
+  section("Every field on the price list can be edited");
+  {
+    let d = fromParsedItems(
+      [
+        { name: "Anorak 2", qty: 9, perBag: 17_000 },
+        { name: "Blanket", qty: 3, perBag: 28_000 },
+      ],
+      { markup: 2_000 },
+    );
+    const [anorak, blanket] = d.rows;
+    d = setRowName(d, anorak.id, "  Anorak #2 ");
+    check(d.rows[0].name === "Anorak #2", "a name can be corrected");
+    check(setRowName(d, anorak.id, "   ") === d, "a blank name keeps the old one");
+    d = setRowQty(d, anorak.id, 11);
+    check(d.rows[0].qty === 11, "bags can be changed");
+    check(setRowQty(d, anorak.id, 0) === d, "a line cannot be set to no bags");
+    d = setRowSellingPrice(d, anorak.id, 21_000);
+    check(sellingPerBag(d.rows[0], d.markup) === 21_000, "the price per bag can be typed straight in");
+    check(d.rows[0].costPerBag === 19_000, "and the cost underneath is that less the markup");
+    check(setRowSellingPrice(d, anorak.id, 2_000) === d, "a price at the markup alone is refused");
+    check(/markup/i.test(sellingPriceProblem(d, 1_500) ?? ""), "and the reason names the markup");
+    // A typed line total works back to the price per bag.
+    d = setRowSellingPrice(d, blanket.id, 99_000 / 3);
+    check(lineTotal(d.rows[1], d.markup) === 99_000, "a typed line total is kept exactly");
+    d = addRow(d, { name: "Bed Sheet", qty: 4, perBag: 36_000 });
+    check(d.rows.length === 3 && d.rows[2].costPerBag === 34_000, "an item can be added by hand at a price per bag");
+    let threw = false;
+    try { addRow(d, { name: "bed sheet", qty: 1, perBag: 30_000 }); } catch { threw = true; }
+    check(threw, "the same item cannot be added twice");
+    threw = false;
+    try { addRow(d, { name: "Scarf", qty: 2, perBag: 1_000 }); } catch { threw = true; }
+    check(threw, "nor at a price below the markup");
+    const t = priceListTotals(d);
+    check(t.bags === 11 + 3 + 4 && t.selling === 11 * 21_000 + 99_000 + 4 * 36_000, "totals follow every edit");
+    const pdfList = buildBuyerPriceList({ title: "x", items: toOrderItems(d) }, d.markup);
+    check(pdfList.grandTotal === t.selling && pdfList.rows[0].name === "Anorak #2", "and the buyer's PDF carries the edits");
+    const back = parsePriceListDoc(JSON.parse(JSON.stringify(d)));
+    check(back.rows.length === 3 && back.rows[0].qty === 11, "edits survive a reload");
+
+    // A buyer's copy has no markup, so the price typed is the price.
+    let b = fromParsedItems([{ name: "Anorak 2", qty: 2, perBag: 26_000 }], { markup: 0, pricesIncludeMarkup: true });
+    b = setRowSellingPrice(b, b.rows[0].id, 27_500);
+    check(b.rows[0].costPerBag === 27_500 && sellingPerBag(b.rows[0], 0) === 27_500, "on a buyer's copy the typed price is used as it is");
+  }
 
   if (failures > 0) {
     console.error(`\n${failures} CHECK(S) FAILED`);

@@ -274,6 +274,83 @@ export function generateManifest(
   };
 }
 
+/**
+ * Correct one line of the list currently shown (see resolveManifest).
+ *
+ * Name: a correction to what the item is called, so it is applied to the
+ * imported line and, when there is one, the generated line at the same index -
+ * otherwise clearing or regenerating would bring the old spelling back. A blank
+ * name is ignored.
+ *
+ * Quantity: a whole number of at least one.
+ *  - With a generated list showing, only the generated figure changes, and it
+ *    is capped at the imported quantity for that line, because a manifest only
+ *    ever reduces. The target is moved to the new total so the stored
+ *    distribution keeps totalling its target, which is what parseManifestDoc
+ *    checks before trusting it on reload.
+ *  - Otherwise the imported quantity itself is corrected.
+ *
+ * An index outside the list, or a patch that changes nothing, returns the
+ * manifest unchanged (the same object).
+ */
+export function editManifestItem(
+  manifest: BagManifest,
+  index: number,
+  patch: { name?: unknown; qty?: unknown },
+): BagManifest {
+  if (!Number.isInteger(index) || index < 0 || index >= manifest.items.length) {
+    return manifest;
+  }
+  const showingGenerated =
+    manifest.generated !== null &&
+    manifest.generated.length > 0 &&
+    index < manifest.generated.length;
+
+  let items = manifest.items;
+  let generated = manifest.generated;
+  let target = manifest.target;
+  let changed = false;
+
+  if (patch.name !== undefined) {
+    const name = sanitizeLine(patch.name, LIMITS.itemName);
+    if (name !== "") {
+      if (items[index].name !== name) {
+        items = items.map((item, i) => (i === index ? { ...item, name } : item));
+        changed = true;
+      }
+      if (showingGenerated && generated![index].name !== name) {
+        generated = generated!.map((item, i) =>
+          i === index ? { ...item, name } : item,
+        );
+        changed = true;
+      }
+    }
+  }
+
+  if (patch.qty !== undefined) {
+    const raw = Math.floor(clampNumber(patch.qty, LIMITS.qty));
+    if (raw >= 1) {
+      if (showingGenerated) {
+        const qty = Math.min(raw, items[index].qty);
+        if (generated![index].qty !== qty) {
+          generated = generated!.map((item, i) =>
+            i === index ? { ...item, qty } : item,
+          );
+          target = sumQty(generated);
+          changed = true;
+        }
+      } else if (items[index].qty !== raw) {
+        items = items.map((item, i) =>
+          i === index ? { ...item, qty: raw } : item,
+        );
+        changed = true;
+      }
+    }
+  }
+
+  return changed ? { ...manifest, items, generated, target } : manifest;
+}
+
 /** Discard the stored distribution and go back to the imported quantities. */
 export function clearGenerated(manifest: BagManifest): BagManifest {
   return { ...manifest, target: null, generated: null, generatedAt: null };
