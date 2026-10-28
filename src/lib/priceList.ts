@@ -56,6 +56,15 @@ export interface PriceListDoc {
   /** Added to every bag's cost. */
   markup: number;
   rows: PriceRow[];
+  /**
+   * The file left some bags without a price - a warehouse count, or a buyer's
+   * copy whose prices could not be used - so they have to be typed in.
+   *
+   * Only then does the page show a column to type them into. A supplier PDF
+   * already has a Per Bag column, and repeating it as an editable cost next to
+   * the selling price only doubled what the file says.
+   */
+  needsCosts: boolean;
   updatedAt: string;
 }
 
@@ -66,6 +75,7 @@ export function emptyPriceListDoc(): PriceListDoc {
     orderNumber: "",
     markup: DEFAULT_MARKUP,
     rows: [],
+    needsCosts: false,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -112,6 +122,7 @@ export function fromParsedItems(
   } = {},
 ): PriceListDoc {
   const book = options.book;
+  const kept = items.slice(0, MAX_ROWS);
 
   return {
     ...emptyPriceListDoc(),
@@ -120,8 +131,10 @@ export function fromParsedItems(
       options.markup === undefined ? DEFAULT_MARKUP : options.markup,
       LIMITS.markup,
     ),
-    rows: items
-      .slice(0, MAX_ROWS)
+    needsCosts: kept.some(
+      (item) => item.qty > 0 && clampNumber(item.perBag, LIMITS.money) <= 0,
+    ),
+    rows: kept
       .map((item) => {
         const fromFile = clampNumber(item.perBag, LIMITS.money);
         const remembered =
@@ -299,6 +312,12 @@ export function parsePriceListDoc(input: unknown): PriceListDoc {
       LIMITS.markup,
     ),
     rows,
+    // Saved before this was recorded: a row without a cost, or one filled from
+    // memory, means the file had none.
+    needsCosts:
+      typeof raw.needsCosts === "boolean"
+        ? raw.needsCosts || rows.some((row) => row.costPerBag <= 0)
+        : rows.some((row) => row.costPerBag <= 0 || row.remembered),
     updatedAt: String(raw.updatedAt ?? new Date().toISOString()),
   };
 }

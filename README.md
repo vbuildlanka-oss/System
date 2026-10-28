@@ -122,7 +122,10 @@ A file from the [Counter](#8-counter-counter) carries item names and counts and
 **no prices at all** — the counting was done before anyone worked out what a bag
 cost. So the per-bag cost is typed in here, and the markup goes on top of it.
 
-- **Cost / bag is an editable column.** Rows without one are tinted amber and
+- **Cost / bag is an editable column, shown only when the file has no prices.**
+  A supplier PDF already gives each bag's price in its Per Bag column, so its
+  table is just Item, Qty, Per Bag and Total, as it always was. A count file
+  has no prices, so the column appears for typing them in. Rows without one are tinted amber and
   their selling price and line total read `—` rather than a figure, because a
   price built on a cost of zero is the markup wearing a cost's clothes.
 - **You cannot download the buyer's copy until every bag has a cost.** Not a
