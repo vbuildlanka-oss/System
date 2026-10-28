@@ -279,6 +279,67 @@ async function main() {
   }
 
   /* ==================================================================== */
+  section("The employer's EPF and the ETF can be typed over too");
+  {
+    const fx = fixture();
+    const { augId, ids } = fx;
+    const before = monthTotals(findMonth(fx.doc, augId)!, fx.doc.fields, fx.doc.rates);
+    let doc = setRowOverride(fx.doc, augId, ids[2], "epfEmployer", "4000");
+    doc = setRowOverride(doc, augId, ids[2], "etf", 1_000);
+    const sunil = findMonth(doc, augId)!.rows[2];
+    const f = rowFigures(sunil, doc.fields, doc.rates);
+    check(f.epfEmployer === 4_000, `the typed employer EPF is used (${f.epfEmployer}, not 5400)`);
+    check(f.etf === 1_000, `the typed ETF is used (${f.etf}, not 1350)`);
+    check(f.overridden.epfEmployer && f.overridden.etf, "and both are marked as typed in");
+    check(f.net === 44_000, `the net does not move, since neither is deducted (${f.net})`);
+    check(
+      f.employerCost === 50_000,
+      `the cost to the employer follows them (${f.employerCost})`,
+    );
+    const after = monthTotals(findMonth(doc, augId)!, doc.fields, doc.rates);
+    check(
+      after.epfEmployer === money(before.epfEmployer - 1_400) &&
+        after.etf === money(before.etf - 350),
+      `the month's totals follow (${after.epfEmployer}, ${after.etf})`,
+    );
+    check(
+      after.epfRemittance === money(after.epfEmployee + after.epfEmployer),
+      "and so does the EPF remittance",
+    );
+
+    // The exports read the override rather than the rate.
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load((await buildPayrollXlsx(doc, augId)) as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet("August 2026")!;
+    const header = (ws.getRow(2).values as unknown[]).slice(1) as string[];
+    const employerCell = ws.getCell(5, header.indexOf("EPF 12% (employer)") + 1);
+    const etfCell = ws.getCell(5, header.indexOf("ETF 3% (employer)") + 1);
+    check(employerCell.value === 4_000, `the spreadsheet carries the typed employer EPF (${JSON.stringify(employerCell.value)})`);
+    check(etfCell.value === 1_000, `and the typed ETF (${JSON.stringify(etfCell.value)})`);
+    const slip = String((await pdfParse(await renderPayslipPdf(doc, augId, ids[2]))).text);
+    check(
+      slip.includes("Rs4,000.00") && slip.includes("Rs1,000.00"),
+      "the payslip shows the typed contributions",
+    );
+    check(!slip.includes("Rs5,400.00"), "not the worked-out employer EPF");
+
+    // Clearing them goes back to the rate.
+    doc = setRowOverride(doc, augId, ids[2], "epfEmployer", "");
+    doc = setRowOverride(doc, augId, ids[2], "etf", null);
+    const back = rowFigures(findMonth(doc, augId)!.rows[2], doc.fields, doc.rates);
+    check(
+      back.epfEmployer === 5_400 && back.etf === 1_350,
+      `clearing them returns to the rate (${back.epfEmployer}, ${back.etf})`,
+    );
+    check(!back.overridden.epfEmployer && !back.overridden.etf, "and they are no longer marked");
+    const junk = setRowOverride(doc, augId, ids[2], "etf", "-5");
+    check(
+      !rowFigures(findMonth(junk, augId)!.rows[2], junk.fields, junk.rates).overridden.etf,
+      "a negative figure is not taken as a typed ETF",
+    );
+  }
+
+  /* ==================================================================== */
   section("Opening a month carries the people, not the figures");
   {
     const { doc, augId } = fixture();

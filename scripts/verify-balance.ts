@@ -49,6 +49,16 @@ import {
   removeExpense,
   removeTurnover,
   updateExpense,
+  updateTurnover,
+  addBalanceDue,
+  createBalanceDue,
+  updateBalanceDue,
+  balanceOutstanding,
+  balanceDueTotals,
+  editedAt,
+  todayIso,
+  NOTE_MAX,
+  ORDER_NUMBER_MAX,
   MAX_ENTRIES,
   type Expense,
   type BalanceSheet,
@@ -350,6 +360,129 @@ section("Editing and removing");
     big = addExpense(big, createExpense({ name: `E${i}`, partner: "Anton", amount: 1 }));
   }
   check(big.expenses.length === MAX_ENTRIES, `the sheet is capped at ${MAX_ENTRIES} entries`);
+}
+
+section("Editing the date, note and container of an entry in place");
+{
+  const today = todayIso();
+  // A turnover entry recorded at a known time.
+  let sheet = emptyBalanceSheet();
+  sheet = addTurnover(
+    sheet,
+    createTurnover({ containerId: A, turnover: 500_000, at: "2026-03-10T09:15:00.000Z" }),
+  );
+  sheet = addTurnover(sheet, createTurnover({ containerId: B, turnover: 300_000 }));
+  const tv = sheet.turnover.find((t) => t.containerId === A)!;
+
+  // Container: normalised exactly as the add form normalises it.
+  sheet = updateTurnover(sheet, tv.id, { containerId: "mscu 123456-5" });
+  check(
+    sheet.turnover.find((t) => t.id === tv.id)!.containerId === B,
+    "an edited turnover container is normalised like a new one",
+  );
+  check(
+    byContainer(sheet).length === 1 &&
+      byContainer(sheet)[0].containerId === B &&
+      byContainer(sheet)[0].turnover === 800_000,
+    `and per-container profit regroups behind it (${byContainer(sheet).map((r) => `${r.containerId}=${r.turnover}`).join(", ")})`,
+  );
+  sheet = updateTurnover(sheet, tv.id, { containerId: "  " });
+  check(
+    sheet.turnover.find((t) => t.id === tv.id)!.containerId === B,
+    "a blank container keeps the old one, since turnover must have a container",
+  );
+  sheet = updateTurnover(sheet, tv.id, { containerId: A });
+  check(byContainer(sheet).length === 2, "and moving it back splits them again");
+  check(balanceTotals(sheet).turnover === 800_000, "the total turnover never moved");
+
+  // Date: a plain day keeps the time of day and the ISO format.
+  sheet = updateTurnover(sheet, tv.id, { at: "2026-02-01" });
+  check(
+    sheet.turnover.find((t) => t.id === tv.id)!.at === "2026-02-01T09:15:00.000Z",
+    `a new day keeps the recorded time (${sheet.turnover.find((t) => t.id === tv.id)!.at})`,
+  );
+  sheet = updateTurnover(sheet, tv.id, { at: "2026-02-31" });
+  check(
+    sheet.turnover.find((t) => t.id === tv.id)!.at === "2026-02-01T09:15:00.000Z",
+    "a day that does not exist is refused, not rolled into March",
+  );
+  for (const junk of ["", "soon", 42, null, { at: 1 }]) {
+    const after = updateTurnover(sheet, tv.id, { at: junk as never });
+    check(
+      after.turnover.find((t) => t.id === tv.id)!.at === "2026-02-01T09:15:00.000Z",
+      `an unreadable date (${JSON.stringify(junk)}) keeps the old one`,
+    );
+  }
+  const future = updateTurnover(sheet, tv.id, { at: "2999-01-01" });
+  check(
+    future.turnover.find((t) => t.id === tv.id)!.at === "2026-02-01T09:15:00.000Z",
+    "a day after today is refused, as the add form only ever stamps now",
+  );
+  const onToday = updateTurnover(sheet, tv.id, { at: today });
+  check(
+    onToday.turnover.find((t) => t.id === tv.id)!.at.slice(0, 10) === today,
+    "today itself is allowed",
+  );
+  check(
+    editedAt("2026-03-10T09:15:00.000Z", "2026-03-11T22:00:00+05:30") === "2026-03-11T16:30:00.000Z",
+    "a full timestamp is stored as UTC ISO",
+  );
+  check(
+    editedAt("not a date", "2026-03-11") === "2026-03-11T00:00:00.000Z",
+    "a broken old date takes midnight",
+  );
+
+  // Note: sanitised like a new one, and may be cleared.
+  sheet = updateTurnover(sheet, tv.id, { note: `  first\n half\t${"x".repeat(300)}` });
+  const note = sheet.turnover.find((t) => t.id === tv.id)!.note;
+  check(note.startsWith("first half x") && note.length === NOTE_MAX, `a turnover note is sanitised (${note.length} chars)`);
+  sheet = updateTurnover(sheet, tv.id, { note: "" });
+  check(sheet.turnover.find((t) => t.id === tv.id)!.note === "", "and can be cleared");
+  sheet = updateTurnover(sheet, tv.id, { note: { evil: true } as never });
+  check(sheet.turnover.find((t) => t.id === tv.id)!.note === "", "a non-text note becomes empty");
+
+  // Expenses: date and note.
+  let ex = sample();
+  const labour = ex.expenses.find((e) => e.name === "Labour")!;
+  const before = balanceTotals(ex);
+  const beforePartners = JSON.stringify(byPartner(ex));
+  ex = updateExpense(ex, labour.id, { at: "2026-01-05", note: " paid\tin cash " });
+  const edited = ex.expenses.find((e) => e.id === labour.id)!;
+  check(
+    edited.at.slice(0, 10) === "2026-01-05" && edited.at.slice(10) === labour.at.slice(10),
+    `an expense date changes the day and keeps the time (${edited.at})`,
+  );
+  check(edited.note === "paid in cash", `an expense note is sanitised (${edited.note})`);
+  check(
+    JSON.stringify(balanceTotals(ex)) === JSON.stringify(before) &&
+      JSON.stringify(byPartner(ex)) === beforePartners,
+    "neither touches profit or the per-member figures",
+  );
+  ex = updateExpense(ex, labour.id, { at: "2999-12-31" });
+  check(ex.expenses.find((e) => e.id === labour.id)!.at === edited.at, "an expense cannot be dated in the future");
+  const round = parseBalanceSheet(JSON.parse(JSON.stringify(ex)));
+  check(
+    round.expenses.find((e) => e.id === labour.id)?.at === edited.at,
+    "an edited date survives saving and reloading",
+  );
+
+  // Balances: order number and note, with the outstanding still derived.
+  let bd = emptyBalanceSheet();
+  bd = addBalanceDue(bd, createBalanceDue({ party: "Supplier", amount: 100_000, paid: 40_000 }));
+  const id = bd.balances[0].id;
+  bd = updateBalanceDue(bd, id, { orderNumber: `  Order\t4 / 2026${"9".repeat(200)}`, note: " half  on\narrival " });
+  const bal = bd.balances[0];
+  check(
+    bal.orderNumber.startsWith("Order 4 / 2026") && bal.orderNumber.length === ORDER_NUMBER_MAX,
+    `an order number is sanitised (${bal.orderNumber.length} chars)`,
+  );
+  check(bal.note === "half on arrival", `a balance note is sanitised (${bal.note})`);
+  check(
+    balanceOutstanding(bal) === 60_000 && balanceDueTotals(bd).payableOutstanding === 60_000,
+    "the outstanding still derives",
+  );
+  bd = updateBalanceDue(bd, id, { orderNumber: "", note: "" });
+  check(bd.balances[0].orderNumber === "" && bd.balances[0].note === "", "both can be cleared");
 }
 
 /* ------------------------------- persistence ------------------------------ */

@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import BuyerFields from "@/components/BuyerFields";
 import FulfilmentCheck from "@/components/FulfilmentCheck";
+import { NumberCell, TextCell } from "@/components/EditCell";
 import { emptyCheck, type FulfilmentCheck as Check } from "@/lib/fulfilment";
 import { EMPTY_BUYER, rememberBuyer, hasBuyerInfo, type Buyer } from "@/lib/buyer";
 import type { Restore } from "@/lib/restoreTypes";
@@ -52,6 +53,7 @@ import {
   STOCKPILE_SOURCE_ID,
   supplyFromStockpile,
   toRequestItems,
+  updateRequestItem,
   upsertRequest,
   type BuyerRequest,
   type LineAvailability,
@@ -438,6 +440,19 @@ export default function RequestsPage() {
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not record that.");
       }
+    },
+    [active, save],
+  );
+
+  /**
+   * A line's note, or supplied typed in directly. Records only: the stockpile is
+   * left alone, which is what "Supply N" is for.
+   */
+  const editLine = useCallback(
+    (itemId: string, patch: { note?: string; supplied?: number }) => {
+      if (!active) return;
+      const next = updateRequestItem(active, itemId, patch);
+      if (next !== active) save(next);
     },
     [active, save],
   );
@@ -1418,7 +1433,7 @@ export default function RequestsPage() {
                           <th className="w-20 px-2 py-3 text-center font-semibold">
                             Wants
                           </th>
-                          <th className="w-28 px-2 py-3 text-center font-semibold">
+                          <th className="w-32 px-2 py-3 text-center font-semibold">
                             Supplied
                           </th>
                           <th className="w-20 px-2 py-3 text-center font-semibold">
@@ -1467,11 +1482,15 @@ export default function RequestsPage() {
                                 }
                                 className="w-full rounded-md border border-transparent bg-transparent px-2 py-1 font-medium text-gray-800 outline-none transition hover:border-gray-200 focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-100"
                               />
-                              {m.item.note && (
-                                <span className="block px-2 text-xs text-gray-400">
-                                  {m.item.note}
-                                </span>
-                              )}
+                              <TextCell
+                                value={m.item.note}
+                                onCommit={(v) => editLine(m.item.id, { note: v })}
+                                label={`Note on ${m.item.name}`}
+                                allowEmpty
+                                maxLength={120}
+                                placeholder="Add a note"
+                                className="py-0.5 text-xs text-gray-500 placeholder:text-gray-300"
+                              />
                             </td>
                             <td className="px-2 py-2.5">
                               <input
@@ -1494,8 +1513,21 @@ export default function RequestsPage() {
                                 >
                                   <Minus className="h-3.5 w-3.5" />
                                 </IconBtn>
-                                <span className="w-8 text-center font-medium text-gray-800">
-                                  {m.item.supplied}
+                                <span
+                                  className="w-12"
+                                  title={`Type how many have been supplied (0 to ${m.item.qty}). This only records it - it does not take bags out of the stockpile. Use "Supply" for that.`}
+                                >
+                                  <NumberCell
+                                    value={m.item.supplied}
+                                    onCommit={(n) =>
+                                      editLine(m.item.id, { supplied: n })
+                                    }
+                                    label={`Bags of ${m.item.name} supplied (recorded only, the stockpile is not touched)`}
+                                    col="supplied"
+                                    integer
+                                    min={0}
+                                    className="px-1 text-center font-medium text-gray-800"
+                                  />
                                 </span>
                                 <IconBtn
                                   title="Record one more supplied"

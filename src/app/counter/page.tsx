@@ -32,6 +32,8 @@ import {
   isCountComplete,
   loadCountDoc,
   removeRow,
+  renameClash,
+  renameRow,
   resetCounts,
   resetTally,
   restoreCounts,
@@ -39,11 +41,13 @@ import {
   searchRows,
   setContainer,
   setCount,
+  setExpected,
   setOrderNumber,
   CONTAINER_LABEL_MAX,
   type CountDoc,
   type CountRow,
 } from "@/lib/counter";
+import { NumberCell, TextCell } from "@/components/EditCell";
 import { shipmentFromFilename } from "@/lib/shipment";
 import type { Restore } from "@/lib/restoreTypes";
 import UndoToast, { useUndo } from "@/components/UndoToast";
@@ -230,6 +234,33 @@ export default function CounterPage() {
     setQuery("");
     searchRef.current?.focus();
   }, [doc, query, persist, remember]);
+
+  /** The last refusal shown by a rename, so a good rename can clear just that. */
+  const renameError = useRef<string | null>(null);
+
+  /**
+   * Correct a row's name as it is typed. A name another row already has is
+   * refused (the lib returns the count unchanged) and the reason shown; the box
+   * keeps what was typed until it loses focus, then shows the real name again.
+   */
+  const rename = useCallback(
+    (row: CountRow, name: string) => {
+      if (!doc) return;
+      const clash = renameClash(doc, row.id, name);
+      if (clash) {
+        const message = `"${name.trim()}" is already on the list as ${clash.name}. Two rows for one item would split its count, so the name was not changed.`;
+        renameError.current = message;
+        setError(message);
+        return;
+      }
+      const next = renameRow(doc, row.id, name);
+      if (next !== doc) persist(next);
+      setError((current) =>
+        current !== null && current === renameError.current ? null : current,
+      );
+    },
+    [doc, persist],
+  );
 
   const submitNewItem = useCallback(() => {
     if (!doc) return;
@@ -628,20 +659,38 @@ export default function CounterPage() {
                     )}
                   >
                     <div className="flex items-center gap-3">
+                      {/* Type to correct the name or the expected figure. The
+                          -ml offsets the cell's padding so the text sits where
+                          the plain label used to. */}
                       <div className="min-w-0 flex-1">
-                        <p
+                        <TextCell
+                          value={row.name}
+                          col="count-name"
+                          label={`Name of ${row.name}`}
+                          maxLength={LIMITS.itemName}
+                          onCommit={(name) => rename(row, name)}
                           className={cn(
-                            "truncate font-medium text-gray-900",
+                            "-ml-2 truncate px-2 py-0.5 font-medium text-gray-900",
                             row.added && "italic text-blue-800",
                           )}
-                        >
-                          {row.name}
-                        </p>
-                        <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-gray-500">
+                        />
+                        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-gray-500">
                           {row.added ? (
                             <span className="text-blue-700">not on the list</span>
                           ) : (
-                            <span>{row.expected} expected</span>
+                            <span className="inline-flex items-center gap-1">
+                              <NumberCell
+                                value={row.expected}
+                                col="count-expected"
+                                integer
+                                label={`Bags of ${row.name} expected`}
+                                onCommit={(n) =>
+                                  doc && persist(setExpected(doc, row.id, n))
+                                }
+                                className="-ml-1.5 w-14 px-1.5 py-0.5 text-xs text-gray-700"
+                              />
+                              expected
+                            </span>
                           )}
                           {row.touched && !row.added && diff !== 0 && (
                             <span
@@ -662,7 +711,7 @@ export default function CounterPage() {
                           {!row.touched && (
                             <span className="text-gray-400">not counted yet</span>
                           )}
-                        </p>
+                        </div>
                       </div>
 
                       {/* Big targets: this gets tapped with one hand */}

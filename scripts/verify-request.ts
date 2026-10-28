@@ -33,6 +33,7 @@ import {
   requestsToCsv,
   supplyFromStockpile,
   toRequestItems,
+  updateRequestItem,
   upsertRequest,
   emptyRequestDoc,
   type BuyerRequest,
@@ -257,6 +258,80 @@ try {
   threw = true;
 }
 check(threw, "supplying zero bags is refused");
+
+/* --------------------------- editing a line ----------------------------- */
+section("Editing a line's note and supplied in place");
+{
+  const base = createRequest(BUYER, [
+    { name: "Blanket", qty: 12 },
+    { name: "Cotton Scarf", qty: 5, note: "mixed colours" },
+  ]);
+  const [blanket, scarf] = base.items;
+  const stockBefore = buildStock();
+  const bagsBefore = stockpileTotals(stockBefore).bags;
+
+  let r = updateRequestItem(base, blanket.id, { supplied: 7 });
+  check(r.items[0].supplied === 7, `typing 7 records 7 (${r.items[0].supplied})`);
+  check(outstanding(r.items[0]) === 5, "and outstanding derives from it");
+  check(requestStatus(r) === "partial", "the list reads as partial");
+  check(
+    requestTotals(r).supplied === 7 && requestTotals(r).outstanding === 10,
+    `the totals follow (${requestTotals(r).supplied} supplied, ${requestTotals(r).outstanding} to go)`,
+  );
+  check(base.items[0].supplied === 0, "the original request is not mutated");
+  check(
+    stockpileTotals(stockBefore).bags === bagsBefore,
+    "recording a typed figure never touches the stockpile",
+  );
+
+  check(updateRequestItem(r, blanket.id, { supplied: 99 }).items[0].supplied === 12, "above what was asked is held to qty");
+  check(updateRequestItem(r, blanket.id, { supplied: -4 }).items[0].supplied === 0, "below zero is held to 0");
+  check(updateRequestItem(r, blanket.id, { supplied: 3.9 }).items[0].supplied === 3, "a fraction is a whole bag count");
+  check(updateRequestItem(r, blanket.id, { supplied: "4" }).items[0].supplied === 4, "a typed string is read");
+  for (const junk of ["", "lots", NaN, Infinity, null, { n: 1 }]) {
+    check(
+      updateRequestItem(r, blanket.id, { supplied: junk }).items[0].supplied === 7,
+      `an unreadable figure (${String(junk)}) keeps the old one`,
+    );
+  }
+  check(
+    requestStatus(updateRequestItem(r, blanket.id, { supplied: 12 })) === "partial" &&
+      requestStatus(
+        updateRequestItem(updateRequestItem(r, blanket.id, { supplied: 12 }), scarf.id, { supplied: 5 }),
+      ) === "complete",
+    "typing everything in completes the list",
+  );
+
+  r = updateRequestItem(r, scarf.id, { note: `  red\tand\nblue ${"x".repeat(300)}` });
+  check(
+    r.items[1].note.startsWith("red and blue x") && r.items[1].note.length === 120,
+    `the note is sanitised like a new line's (${r.items[1].note.length} chars)`,
+  );
+  check(r.items[1].supplied === 0 && r.items[1].qty === 5, "editing the note leaves the figures alone");
+  r = updateRequestItem(r, scarf.id, { note: "" });
+  check(r.items[1].note === "", "a note can be cleared");
+  check(updateRequestItem(r, scarf.id, { note: ["x"] }).items[1].note === "", "a non-text note becomes empty");
+  check(r.items[0].supplied === 7, "editing one line leaves the other alone");
+
+  const same = updateRequestItem(r, blanket.id, { supplied: 7 });
+  check(same === r, "an edit that changes nothing returns the same request");
+  check(updateRequestItem(r, "nope", { supplied: 1 }) === r, "an unknown line changes nothing");
+  const stamped = updateRequestItem(
+    { ...r, updatedAt: "2000-01-01T00:00:00.000Z" },
+    blanket.id,
+    { supplied: 2 },
+  );
+  check(stamped.updatedAt !== "2000-01-01T00:00:00.000Z", "a real edit stamps updatedAt");
+
+  // The stockpile path still works on a line whose supplied was typed in.
+  const typed = updateRequestItem(base, blanket.id, { supplied: 4 });
+  const via = supplyFromStockpile(typed, stockBefore, blanket.id, 8);
+  check(via.request.items[0].supplied === 12, "Supply N still adds on top of a typed figure");
+  check(
+    stockpileTotals(via.stockpile).bags === bagsBefore - 8,
+    "and only it takes bags out of the stockpile",
+  );
+}
 
 /* ----------------------------- the document ----------------------------- */
 section("The requests file");

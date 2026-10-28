@@ -20,6 +20,7 @@ import {
   checkTarget,
   clearGenerated,
   createManifest,
+  editManifestItem,
   generateManifest,
   manifestFilename,
   parseManifestDoc,
@@ -329,6 +330,111 @@ async function pdfText(buf: Buffer): Promise<string> {
       cleared.target === null &&
       resolveManifest(cleared).total === 733,
     "clearing returns the original quantities",
+  );
+
+  /* ---------------------------- editing a line ---------------------------- */
+  section("Editing a line of the list on screen");
+
+  // Before generating: the imported list is what shows, so that is what changes.
+  const plain = createManifest("Sri Lanka 01", [
+    { name: "Anorak", qty: 10 },
+    { name: "Blanket", qty: 4 },
+    { name: "Cotton Scarf", qty: 6 },
+  ]);
+  const plainQty = editManifestItem(plain, 1, { qty: 7.9 });
+  check(plainQty.items[1].qty === 7, `an imported quantity can be corrected, as a whole number (${plainQty.items[1].qty})`);
+  check(plainQty.generated === null, "without inventing a generated list");
+  check(resolveManifest(plainQty).total === 23, `and the total follows (${resolveManifest(plainQty).total})`);
+  check(
+    editManifestItem(plain, 1, { qty: 40 }).items[1].qty === 40,
+    "with no generated list an imported figure can go up too - it is a correction of the import",
+  );
+  const plainName = editManifestItem(plain, 0, { name: "  Anorak   Mens " });
+  check(plainName.items[0].name === "Anorak Mens", `a name can be corrected, and is tidied (${plainName.items[0].name})`);
+  check(editManifestItem(plain, 0, { name: "   " }) === plain, "a blank name is ignored");
+  for (const bad of [0, 0.5, -3, "nonsense"]) {
+    check(
+      editManifestItem(plain, 0, { qty: bad }) === plain,
+      `a quantity of ${JSON.stringify(bad)} is refused: every line keeps at least one bag`,
+    );
+  }
+  check(editManifestItem(plain, 3, { qty: 2 }) === plain, "an index past the end changes nothing");
+  check(editManifestItem(plain, -1, { qty: 2 }) === plain, "and so does a negative one");
+  check(editManifestItem(plain, 0, { qty: 10 }) === plain, "a patch that changes nothing returns the same manifest");
+
+  // After generating: the generated list is what shows, so that is fine-tuned.
+  const genPlain = generateManifest(plain, 14, 5);
+  const before = resolveManifest(genPlain);
+  const lowered = editManifestItem(genPlain, 0, { qty: 1 });
+  const rl = resolveManifest(lowered);
+  check(rl.generated && rl.items[0].qty === 1, "a generated figure can be fine-tuned");
+  check(
+    JSON.stringify(lowered.items) === JSON.stringify(plain.items),
+    "while the imported quantities are left alone, so the 'was N' hint still has them",
+  );
+  check(
+    rl.total === before.total - (before.items[0].qty - 1),
+    `the total follows the edit (${before.total} -> ${rl.total})`,
+  );
+  check(lowered.target === rl.total, `and the target moves with it (${lowered.target})`);
+  check(
+    rl.items.slice(1).every((it, i) => it.qty === before.items[i + 1].qty),
+    "the other generated lines are not reshuffled",
+  );
+
+  const raised = editManifestItem(genPlain, 0, { qty: 99 });
+  check(
+    resolveManifest(raised).items[0].qty === 10,
+    `a generated figure cannot go above what was imported (${resolveManifest(raised).items[0].qty} of 10)`,
+  );
+  check(
+    resolveManifest(raised).items.every((it, i) => it.qty <= plain.items[i].qty),
+    "so a manifest still only ever reduces",
+  );
+  check(
+    editManifestItem(genPlain, 1, { qty: 0 }) === genPlain,
+    "and a generated line cannot drop below one bag",
+  );
+
+  const renamedGen = editManifestItem(genPlain, 2, { name: "Silk Scarf" });
+  check(
+    renamedGen.generated?.[2].name === "Silk Scarf" && renamedGen.items[2].name === "Silk Scarf",
+    "a rename on a generated list reaches the imported line too",
+  );
+  check(
+    resolveManifest(clearGenerated(renamedGen)).items[2].name === "Silk Scarf",
+    "so clearing the generated list does not bring the old spelling back",
+  );
+  check(
+    renamedGen.generated?.[2].qty === genPlain.generated?.[2].qty,
+    "and renaming leaves the figure alone",
+  );
+
+  // The record has to survive a reload: parseManifestDoc only trusts a stored
+  // distribution that totals its target, which is why the target follows edits.
+  const reloadedEdit = parseManifestDoc({ manifests: [lowered] }).manifests[0];
+  check(
+    JSON.stringify(reloadedEdit.generated) === JSON.stringify(lowered.generated),
+    "an edited generated list survives saving and reloading",
+  );
+  check(reloadedEdit.target === lowered.target, "with its target");
+
+  // The page exports resolveManifest(active).items, so the edits are what goes out.
+  const editedExport = await manifestPost(
+    jsonReq({
+      orderNumber: renamedGen.orderNumber,
+      containerNumber: CONTAINER,
+      format: "xlsx",
+      items: resolveManifest(editManifestItem(renamedGen, 0, { qty: 2 })).items.map(
+        (i) => ({ name: i.name, qty: i.qty }),
+      ),
+    }),
+  );
+  const editedSheet = await readXlsx(Buffer.from(await editedExport.arrayBuffer()));
+  check(editedExport.status === 200, `the edited manifest exports (${editedExport.status})`);
+  check(
+    editedSheet.items[0].qty === 2 && editedSheet.items[2].name === "Silk Scarf",
+    `and the spreadsheet carries the edited figures and names (${JSON.stringify(editedSheet.items)})`,
   );
 
   /* --------------------------- separate targets --------------------------- */

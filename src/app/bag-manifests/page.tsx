@@ -23,6 +23,7 @@ import {
   checkTarget,
   clearGenerated,
   createManifest,
+  editManifestItem,
   generateManifest,
   loadManifests,
   manifestFilename,
@@ -42,6 +43,8 @@ import { cn } from "@/lib/cn";
 import UndoToast, { useUndo } from "@/components/UndoToast";
 import { useFind } from "@/lib/useFind";
 import { searchList } from "@/lib/search";
+import { NumberCell, TextCell } from "@/components/EditCell";
+import { LIMITS } from "@/lib/types";
 
 /** Where the Order Editor keeps its current sheet. */
 const EDITOR_KEY = "balebook.orderEditor.v1";
@@ -257,6 +260,37 @@ export default function BagManifestsPage() {
     setTargetDraft("");
     setNotice("Cleared - showing the original quantities.");
   }, [active, doc, replaceManifest, undoer]);
+
+  /** The last refusal shown by an item edit, so a good edit can clear just that. */
+  const editError = useRef<string | null>(null);
+
+  /**
+   * Correct a line of the list on screen, as it is typed. On a generated list
+   * the figure is capped at what was imported - a manifest only ever reduces -
+   * and the reason is shown when the cap bites.
+   */
+  const editItem = useCallback(
+    (index: number, patch: { name?: string; qty?: number }) => {
+      if (!active) return;
+      const cap = active.items[index]?.qty ?? 0;
+      const capped =
+        resolveManifest(active).generated &&
+        patch.qty !== undefined &&
+        patch.qty > cap;
+      const next = editManifestItem(active, index, patch);
+      if (next !== active) replaceManifest(next);
+      if (capped) {
+        const message = `${active.items[index]?.name ?? "That item"} was imported with ${cap} bag${cap === 1 ? "" : "s"}, so the manifest cannot show more - it only ever reduces. Set to ${cap}.`;
+        editError.current = message;
+        setError(message);
+      } else {
+        setError((current) =>
+          current !== null && current === editError.current ? null : current,
+        );
+      }
+    },
+    [active, replaceManifest],
+  );
 
   const removeManifest = useCallback(() => {
     if (!active || !doc) return;
@@ -726,7 +760,7 @@ export default function BagManifestsPage() {
                         <th className="px-4 py-3 text-left font-semibold">
                           Item Name
                         </th>
-                        <th className="w-32 px-4 py-3 text-right font-semibold">
+                        <th className="w-44 px-4 py-3 text-right font-semibold">
                           Quantity
                         </th>
                       </tr>
@@ -746,23 +780,42 @@ export default function BagManifestsPage() {
                         const was = active.items[i]?.qty ?? item.qty;
                         const changed = resolved.generated && was !== item.qty;
                         return (
+                          // Keyed by position alone: keying on the name would
+                          // remount the row, and drop focus, on every keystroke
+                          // of a rename.
                           <tr
-                            key={`${item.name}-${i}`}
+                            key={i}
                             className={cn(
                               "border-b border-gray-100 transition-colors hover:bg-brand-50/40",
                               i % 2 === 1 && "bg-gray-50/60",
                             )}
                           >
-                            <td className="px-4 py-2.5 text-gray-800">
-                              {item.name}
+                            <td className="px-2 py-1.5 text-gray-800">
+                              <TextCell
+                                value={item.name}
+                                col="bm-name"
+                                label={`Item name for ${item.name}`}
+                                maxLength={LIMITS.itemName}
+                                onCommit={(name) => editItem(i, { name })}
+                              />
                             </td>
-                            <td className="px-4 py-2.5 text-right font-medium text-gray-900">
-                              {item.qty}
-                              {changed && (
-                                <span className="ml-2 text-xs font-normal text-gray-400">
-                                  was {was}
-                                </span>
-                              )}
+                            <td className="px-2 py-1.5 text-right font-medium text-gray-900">
+                              <div className="flex items-center justify-end gap-2">
+                                {changed && (
+                                  <span className="whitespace-nowrap text-xs font-normal text-gray-400">
+                                    was {was}
+                                  </span>
+                                )}
+                                <NumberCell
+                                  value={item.qty}
+                                  col="bm-qty"
+                                  integer
+                                  min={1}
+                                  label={`Bags of ${item.name}`}
+                                  onCommit={(qty) => editItem(i, { qty })}
+                                  className="w-20 font-medium"
+                                />
+                              </div>
                             </td>
                           </tr>
                         );

@@ -1153,11 +1153,66 @@ function Row({
         {formatLKR(figures.net)}
       </td>
 
-      <td className="px-3 py-2 text-right tabular-nums text-gray-400">
-        {formatLKR(figures.epfEmployer)}
+      {/* What the company pays on top: worked out, typeable like the employee's EPF. */}
+      <td className="px-3 py-1.5 text-right">
+        <input
+          type="number"
+          min={0}
+          step={100}
+          value={figures.epfEmployer === 0 ? "" : figures.epfEmployer}
+          aria-label={`Employer EPF for ${row.name || "this person"}`}
+          data-col="epf-employer"
+          onKeyDown={moveInColumn}
+          title={
+            figures.overridden.epfEmployer
+              ? "Typed in for this month. Clear it to go back to the rate."
+              : `Worked out at ${doc.rates.epfEmployer}% of gross. Type over it if this month is different.`
+          }
+          onChange={(e) =>
+            persist(
+              setRowOverride(
+                doc,
+                monthId,
+                row.id,
+                "epfEmployer",
+                e.target.value,
+              ),
+            )
+          }
+          className={cn(
+            cell,
+            "text-gray-500",
+            figures.overridden.epfEmployer &&
+              "border-blue-200 bg-blue-50/60 text-blue-900",
+          )}
+        />
       </td>
-      <td className="px-3 py-2 text-right tabular-nums text-gray-400">
-        {formatLKR(figures.etf)}
+      <td className="px-3 py-1.5 text-right">
+        <input
+          type="number"
+          min={0}
+          step={100}
+          value={figures.etf === 0 ? "" : figures.etf}
+          aria-label={`ETF for ${row.name || "this person"}`}
+          data-col="etf"
+          onKeyDown={moveInColumn}
+          title={
+            figures.overridden.etf
+              ? "Typed in for this month. Clear it to go back to the rate."
+              : `Worked out at ${doc.rates.etf}% of gross. Type over it if this month is different.`
+          }
+          onChange={(e) =>
+            persist(
+              setRowOverride(doc, monthId, row.id, "etf", e.target.value),
+            )
+          }
+          className={cn(
+            cell,
+            "text-gray-500",
+            figures.overridden.etf &&
+              "border-blue-200 bg-blue-50/60 text-blue-900",
+          )}
+        />
       </td>
 
       <td className="whitespace-nowrap px-2 py-1.5 text-right">

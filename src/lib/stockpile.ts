@@ -29,8 +29,9 @@
  * downloadable as a file. No database.
  */
 
-import { formatLKR } from "./types";
+import { formatLKR, LIMITS } from "./types";
 import { readLocal, writeLocal } from "./storage";
+import { sanitizeLine } from "./buyer";
 
 export const STOCKPILE_KEY = "balebook.stockpile.v1";
 const STOCKPILE_KEY_LEGACY = "vbuild.stockpile.v1";
@@ -74,6 +75,12 @@ export interface StockMovement {
   value: number;
   /** Source for an addition, or reason for a withdrawal. */
   reason: string;
+  /**
+   * Set when the movement is a hand correction of a batch's bag count rather
+   * than bags really coming in or going out. `from`/`to` are the batch's count
+   * before and after, so a run of corrections can be folded into one entry.
+   */
+  correction?: { lotId: string; from: number; to: number };
 }
 
 export interface Stockpile {
@@ -158,7 +165,8 @@ export function parseStockpile(input: unknown): Stockpile {
   const cleanHistory: StockMovement[] = history
     .map((h, i) => {
       const o = (h ?? {}) as Record<string, unknown>;
-      return {
+      const c = (o.correction ?? null) as Record<string, unknown> | null;
+      const movement: StockMovement = {
         id: String(o.id ?? `m${i}`),
         at: String(o.at ?? new Date().toISOString()),
         kind: o.kind === "out" ? ("out" as const) : ("in" as const),
@@ -167,6 +175,19 @@ export function parseStockpile(input: unknown): Stockpile {
         value: Number(o.value) || 0,
         reason: String(o.reason ?? ""),
       };
+      if (
+        c &&
+        typeof c === "object" &&
+        Number.isFinite(Number(c.from)) &&
+        Number.isFinite(Number(c.to))
+      ) {
+        movement.correction = {
+          lotId: String(c.lotId ?? ""),
+          from: Number(c.from),
+          to: Number(c.to),
+        };
+      }
+      return movement;
     })
     .slice(0, MAX_HISTORY);
 
@@ -527,20 +548,177 @@ export function mergeItems(
   };
 }
 
+/**
+ * Rename an item. A blank name keeps the old one; an unchanged name returns the
+ * same stockpile.
+ *
+ * The new name is matched the same way imports are, so renaming "Blanket X" to
+ * "blanket" while a "Blanket" is already held would leave two items that every
+ * later import treats as one - the next order would only ever reach the first.
+ * That is refused with an error pointing at Merge, which is the deliberate way
+ * to combine two items.
+ */
 export function renameItem(
   sp: Stockpile,
   itemId: string,
   name: string,
 ): Stockpile {
-  const clean = name.trim();
+  const clean = sanitizeLine(name, LIMITS.itemName);
   if (!clean) return sp;
+  const item = sp.items.find((i) => i.id === itemId);
+  if (!item) throw new Error("That item is no longer in the stockpile.");
+  if (clean === item.name) return sp;
+
+  const key = normalizeItemKey(clean);
+  const clash = sp.items.find((i) => i.id !== itemId && i.key === key);
+  if (clash) {
+    throw new Error(
+      `"${clash.name}" is already in the stockpile, so "${item.name}" cannot be renamed "${clean}". To combine them, use Merge into another item.`,
+    );
+  }
   return {
     ...sp,
-    items: sp.items.map((i) =>
-      i.id === itemId ? { ...i, name: clean, key: normalizeItemKey(clean) } : i,
-    ),
+    items: sp.items.map((i) => (i.id === itemId ? { ...i, name: clean, key } : i)),
     updatedAt: new Date().toISOString(),
   };
+}
+
+/** Earliest date a batch can be dated to. Guards against half-typed years. */
+export const LOT_DATE_MIN = "2000-01-01";
+/**
+ * Corrections to the same batch this close together are one correction, so
+ * typing "12" over "5" logs 5 -> 12 once rather than 5 -> 1 and then 1 -> 12.
+ */
+export const CORRECTION_MERGE_MS = 2 * 60_000;
+
+/** The latest date a batch can carry: today, as the file counts days (UTC). */
+export function lotDateMax(now: Date = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
+export interface LotPatch {
+  /** Whole bags, at least 1. To empty a batch, withdraw instead. */
+  bags?: number;
+  perBag?: number;
+  source?: string;
+  /** "YYYY-MM-DD" */
+  addedOn?: string;
+}
+
+/**
+ * Correct one batch in place: its bag count, price, source or date.
+ *
+ * Throws with a message fit to show when a value is not acceptable, and returns
+ * the same stockpile when nothing actually changes.
+ *
+ * Only a change of bags is logged. The movement history is a record of bags in
+ * and out; a corrected price, source or date moves no bags, and totals, averages
+ * and ages are all calculated from the lots so they follow on their own. A bag
+ * correction is logged as an "in" or "out" of the difference, marked as a
+ * correction - folded into the previous entry when it is the same batch within
+ * CORRECTION_MERGE_MS, and dropped if it nets out to nothing.
+ */
+export function updateLot(
+  sp: Stockpile,
+  itemId: string,
+  lotId: string,
+  patch: LotPatch,
+  at: Date = new Date(),
+): Stockpile {
+  const item = sp.items.find((i) => i.id === itemId);
+  if (!item) throw new Error("That item is no longer in the stockpile.");
+  const lot = item.lots.find((l) => l.id === lotId);
+  if (!lot) throw new Error("That batch is no longer in the stockpile.");
+
+  const next: StockLot = { ...lot };
+
+  if (patch.bags !== undefined) {
+    const bags = Math.floor(Number(patch.bags));
+    if (!Number.isFinite(bags)) throw new Error("Enter how many bags this batch holds.");
+    if (bags < 1) {
+      throw new Error(
+        "A batch holds at least 1 bag. To empty it, use Remove bags so the bags are accounted for.",
+      );
+    }
+    next.bags = Math.min(bags, LIMITS.qty);
+  }
+
+  if (patch.perBag !== undefined) {
+    const perBag = Number(patch.perBag);
+    if (!Number.isFinite(perBag)) throw new Error("Enter a valid price per bag.");
+    next.perBag = Math.min(Math.max(0, perBag), LIMITS.money);
+  }
+
+  if (patch.source !== undefined) {
+    next.source = sanitizeLine(patch.source, LIMITS.title);
+  }
+
+  if (patch.addedOn !== undefined) {
+    const day = String(patch.addedOn).trim();
+    const midday = new Date(`${day}T12:00:00.000Z`);
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(day) ||
+      Number.isNaN(midday.getTime()) ||
+      midday.toISOString().slice(0, 10) !== day
+    ) {
+      throw new Error("Enter a real date for this batch.");
+    }
+    if (day < LOT_DATE_MIN) throw new Error(`A batch cannot be dated before ${LOT_DATE_MIN}.`);
+    if (day > lotDateMax(at)) throw new Error("A batch cannot be dated in the future.");
+    if (day !== lot.addedAt.slice(0, 10)) {
+      // Midday, as restored lots are, so the date reads the same either side of
+      // UTC - but never a time still to come today.
+      next.addedAt = midday.getTime() > at.getTime() ? at.toISOString() : midday.toISOString();
+    }
+  }
+
+  if (
+    next.bags === lot.bags &&
+    next.perBag === lot.perBag &&
+    next.source === lot.source &&
+    next.addedAt === lot.addedAt
+  ) {
+    return sp;
+  }
+
+  const items = sp.items.map((i) =>
+    i.id === itemId
+      ? { ...i, lots: i.lots.map((l) => (l.id === lotId ? next : l)) }
+      : i,
+  );
+
+  let history = sp.history;
+  const movements: StockMovement[] = [];
+  if (next.bags !== lot.bags) {
+    let from = lot.bags;
+    const head = history[0];
+    const headAt = head ? Date.parse(head.at) : NaN;
+    if (
+      head?.correction &&
+      head.correction.lotId === lotId &&
+      head.correction.to === lot.bags &&
+      at.getTime() >= headAt &&
+      at.getTime() - headAt <= CORRECTION_MERGE_MS
+    ) {
+      from = head.correction.from;
+      history = history.slice(1);
+    }
+    const delta = next.bags - from;
+    if (delta !== 0) {
+      movements.push({
+        id: uid("m"),
+        at: at.toISOString(),
+        kind: delta > 0 ? "in" : "out",
+        itemName: item.name,
+        bags: Math.abs(delta),
+        value: Math.abs(delta) * next.perBag,
+        reason: `Count corrected from ${from} to ${next.bags} bags (${next.source || "Added manually"})`,
+        correction: { lotId, from, to: next.bags },
+      });
+    }
+  }
+
+  return touch({ ...sp, items, history }, movements);
 }
 
 export function removeItem(sp: Stockpile, itemId: string): Stockpile {

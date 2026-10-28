@@ -443,6 +443,59 @@ export function restoreCounts(
   };
 }
 
+/**
+ * The other row a rename to `name` would duplicate, or null when there is none.
+ * Lets the page say which item is in the way.
+ */
+export function renameClash(
+  doc: CountDoc,
+  id: string,
+  name: string,
+): CountRow | null {
+  const clean = sanitizeLine(name, LIMITS.itemName);
+  if (clean === "") return null;
+  const key = normalizeItemKey(clean);
+  return (
+    doc.rows.find((r) => r.id !== id && normalizeItemKey(r.name) === key) ??
+    null
+  );
+}
+
+/**
+ * Correct a row's name.
+ *
+ * Refused - the document comes back unchanged, the same object - when the name
+ * is blank, the row is unknown, or the new name is another row's under
+ * normalizeItemKey (the same test addItem uses). Two rows for one item would let
+ * a count split across both, which is exactly what addItem guards against.
+ * Respelling a row as itself ("Anorak 2" to "Anorak #2") is allowed. The count
+ * and whether it was touched are left alone.
+ */
+export function renameRow(doc: CountDoc, id: string, name: string): CountDoc {
+  const clean = sanitizeLine(name, LIMITS.itemName);
+  if (clean === "") return doc;
+  const row = doc.rows.find((r) => r.id === id);
+  if (!row) return doc;
+  if (row.name === clean) return doc;
+  if (renameClash(doc, id, clean)) return doc;
+  return touch(doc, {
+    rows: doc.rows.map((r) => (r.id === id ? { ...r, name: clean } : r)),
+  });
+}
+
+/**
+ * Correct what the list says should be there. A whole number of bags, zero or
+ * more and capped like every other count; anything unusable becomes zero. The
+ * count, and whether it was taken, are left alone.
+ */
+export function setExpected(doc: CountDoc, id: string, n: number): CountDoc {
+  if (!doc.rows.some((r) => r.id === id)) return doc;
+  const expected = Math.floor(clampNumber(n, LIMITS.qty));
+  return touch(doc, {
+    rows: doc.rows.map((r) => (r.id === id ? { ...r, expected } : r)),
+  });
+}
+
 export function removeRow(doc: CountDoc, id: string): CountDoc {
   return touch(doc, { rows: doc.rows.filter((row) => row.id !== id) });
 }

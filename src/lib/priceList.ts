@@ -25,6 +25,7 @@ import { readLocal, writeLocal } from "./storage";
 import { clampNumber, LIMITS, type OrderItem } from "./types";
 import { sanitizeLine } from "./buyer";
 import { lookupPrice, type PriceBook } from "./priceBook";
+import { normalizeItemKey } from "./stockpile";
 
 export const PRICE_LIST_KEY = "balebook.priceList.v1";
 export const PRICE_LIST_VERSION = 1;
@@ -256,7 +257,71 @@ export function setRowCost(
   });
 }
 
+/**
+ * Set what the buyer pays for a bag of this item, as typed in the Per Bag
+ * column. The cost is that less the markup, since the markup is always added
+ * on top. Refused (the same document comes back) when it would leave no cost -
+ * a price at or below the markup - because a bag is never quoted at the markup
+ * alone; see sellingPriceProblem for the message.
+ */
+export function setRowSellingPrice(
+  doc: PriceListDoc,
+  id: string,
+  perBag: number,
+): PriceListDoc {
+  if (sellingPriceProblem(doc, perBag) !== null) return doc;
+  const cost = Math.round((perBag - Math.max(0, doc.markup)) * 100) / 100;
+  return setRowCost(doc, id, cost);
+}
+
+/** Why a typed selling price cannot be used, or null when it can. */
+export function sellingPriceProblem(doc: PriceListDoc, perBag: number): string | null {
+  const markup = Math.max(0, doc.markup);
+  if (!Number.isFinite(perBag) || perBag <= 0) return "Enter a price per bag.";
+  if (perBag > LIMITS.money) return "That price is unrealistically large.";
+  if (perBag <= markup) {
+    return `The markup is Rs ${markup.toLocaleString("en-LK")} a bag, so the price must be more than that. Lower the markup to quote less.`;
+  }
+  return null;
+}
+
+/** Correct an item's name. A blank name keeps the old one. */
+export function setRowName(doc: PriceListDoc, id: string, name: string): PriceListDoc {
+  const clean = sanitizeLine(name, LIMITS.itemName);
+  if (clean === "") return doc;
+  return touch(doc, {
+    rows: doc.rows.map((row) => (row.id === id ? { ...row, name: clean } : row)),
+  });
+}
+
+/**
+ * Add an item by hand. `perBag` is the buyer's price per bag, as on the table;
+ * the cost underneath is that less the markup. Throws a message fit to show
+ * when the line cannot be added.
+ */
+export function addRow(
+  doc: PriceListDoc,
+  input: { name: string; qty: number; perBag: number },
+): PriceListDoc {
+  const name = sanitizeLine(input.name, LIMITS.itemName);
+  if (name === "") throw new Error("Enter the item name.");
+  const qty = Math.floor(clampNumber(input.qty, LIMITS.qty));
+  if (qty < 1) throw new Error("Enter how many bags.");
+  const problem = sellingPriceProblem(doc, Number(input.perBag));
+  if (problem) throw new Error(problem);
+  if (doc.rows.length >= MAX_ROWS) throw new Error("This list is full.");
+  const key = normalizeItemKey(name);
+  const clash = doc.rows.find((row) => normalizeItemKey(row.name) === key);
+  if (clash) throw new Error(`${clash.name} is already on the list - change its bags instead.`);
+  const cost = Math.round((Number(input.perBag) - Math.max(0, doc.markup)) * 100) / 100;
+  return touch(doc, {
+    rows: [...doc.rows, createPriceRow({ name, qty, costPerBag: cost })],
+  });
+}
+
 export function setRowQty(doc: PriceListDoc, id: string, qty: number): PriceListDoc {
+  // A line with no bags prices nothing, and would vanish on reload.
+  if (Math.floor(clampNumber(qty, LIMITS.qty)) < 1) return doc;
   return touch(doc, {
     rows: doc.rows.map((row) =>
       row.id === id
